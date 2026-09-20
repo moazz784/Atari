@@ -209,10 +209,10 @@ export const api = {
       },
     }),
 
-  orders: (branchId, status) =>
-    request(`/api/orders${qs({ branchId, status })}`),
-  pendingOrders: (branchId) =>
-    request(`/api/orders/pending${qs({ branchId })}`),
+  orders: (branchId, status, shiftId) =>
+    request(`/api/orders${qs({ branchId, status, shiftId })}`),
+  pendingOrders: (branchId, shiftId) =>
+    request(`/api/orders/pending${qs({ branchId, shiftId })}`),
   acceptOrder: (id) => request(`/api/orders/${id}/accept`, { method: "POST" }),
   rejectOrder: (id) => request(`/api/orders/${id}/reject`, { method: "POST" }),
   patchOrderStatus: (id, status) =>
@@ -221,7 +221,10 @@ export const api = {
   sessions: (branchId, active = true) =>
     request(`/api/sessions${qs({ branchId, active })}`),
   endSession: (id) => request(`/api/sessions/${id}/end`, { method: "POST" }),
-  transactions: (branchId) => request(`/api/transactions${qs({ branchId })}`),
+  transactions: (branchId, shiftId) => request(`/api/transactions${qs({ branchId, shiftId })}`),
+  shifts: (branchId) => request(`/api/shifts${qs({ branchId })}`),
+  endShift: (branchId) =>
+    request(`/api/shifts/end${qs({ branchId })}`, { method: "POST" }),
 
   products: (branchId) => request(`/api/products${qs({ branchId })}`),
   createProduct: (body) => request("/api/products", { method: "POST", body }),

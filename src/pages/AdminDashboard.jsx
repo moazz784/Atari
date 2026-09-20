@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Activity, LayoutDashboard, DoorOpen, ShoppingCart, Timer, Users,
   Package, BarChart3, UserCog, Layers, Settings, Menu, Bell,
-  ChevronDown, CreditCard, X, Edit, Trash2, Plus, Search, LogOut, QrCode
+  ChevronDown, CreditCard, X, Edit, Trash2, Plus, LogOut, QrCode
 } from 'lucide-react';
 import QrCardModal from '../QrCardModal';
 import {
@@ -35,6 +35,8 @@ const CyberCafeDashboard = () => {
   const [staff, setStaff] = useState([]);
   const [categories, setCategories] = useState([]);
   const [settings, setSettings] = useState(null);
+  const [shifts, setShifts] = useState([]);
+  const [selectedShiftId, setSelectedShiftId] = useState(null);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -44,6 +46,7 @@ const CyberCafeDashboard = () => {
   const [busy, setBusy] = useState(false);
   const [qrRoom, setQrRoom] = useState(null);
   const hubRef = useRef(null);
+  const viewingCurrentShiftRef = useRef(true);
 
   // ===== Responsive detection =====
   useEffect(() => {
@@ -93,14 +96,15 @@ const CyberCafeDashboard = () => {
     Promise.all([
       api.dashboard(selectedBranch).catch(() => null),
       api.rooms(selectedBranch).catch(() => []),
-      api.orders(selectedBranch).catch(() => []),
+      api.orders(selectedBranch, undefined, selectedShiftId).catch(() => []),
       api.customers(selectedBranch).catch(() => []),
       api.products(selectedBranch).catch(() => []),
       api.staff().catch(() => []),
       api.categories(selectedBranch).catch(() => []),
       api.settings(selectedBranch).catch(() => null),
       api.sessions(selectedBranch, true).catch(() => []),
-    ]).then(([dash, rms, ords, custs, prods, stf, cats, stgs, sess]) => {
+      api.shifts(selectedBranch).catch(() => []),
+    ]).then(([dash, rms, ords, custs, prods, stf, cats, stgs, sess, shfts]) => {
       if (cancelled) return;
 
       // Dashboard
@@ -117,6 +121,7 @@ const CyberCafeDashboard = () => {
       setStaff(normalizeStaff(stf));
       setCategories(normalizeCategories(cats));
       setSettings(normalizeSettings(stgs));
+      setShifts(Array.isArray(shfts) ? shfts : []);
 
       setLoading(false);
     }).catch((err) => {
@@ -127,7 +132,7 @@ const CyberCafeDashboard = () => {
     });
 
     return () => { cancelled = true; };
-  }, [selectedBranch, reloadToken]);
+  }, [selectedBranch, reloadToken, selectedShiftId]);
 
   // ===== SignalR للتحديثات اللحظية =====
   useEffect(() => {
@@ -137,7 +142,7 @@ const CyberCafeDashboard = () => {
     connectOrdersHub({
       onOrderCreated: (payload) => {
         const order = payload?.admin;
-        if (order) setOrders(prev => [normalizeOrder(order), ...prev]);
+        if (order && viewingCurrentShiftRef.current) setOrders(prev => [normalizeOrder(order), ...prev]);
       },
       onOrderUpdated: (order) => {
         setOrders(prev => prev.map(o => o.id === order.id ? normalizeOrder(order) : o));
@@ -161,6 +166,12 @@ const CyberCafeDashboard = () => {
 
     return () => { conn?.stop(); hubRef.current = null; };
   }, []);
+
+  viewingCurrentShiftRef.current = !selectedShiftId || !!shifts.find((s) => s.id === selectedShiftId && s.isCurrent);
+
+  useEffect(() => {
+    setSelectedShiftId(null);
+  }, [selectedBranch]);
 
   useEffect(() => {
     if (!toast) return;
@@ -298,6 +309,16 @@ const CyberCafeDashboard = () => {
         return (
           <OrdersContent
             orders={orders}
+            shifts={shifts}
+            selectedShiftId={selectedShiftId}
+            onSelectShift={setSelectedShiftId}
+            onEndShift={() => {
+              if (!window.confirm("Live lists reset. History stays under Past shifts.")) return;
+              run(async () => {
+                await api.endShift(selectedBranch);
+                setSelectedShiftId(null);
+              });
+            }}
             onStatus={(order) => setModal({ kind: "order-status", record: order })}
           />
         );
@@ -565,7 +586,10 @@ const CyberCafeDashboard = () => {
               {branches.map(b => (
                 <button 
                   key={b.id}
-                  onClick={() => setSelectedBranch(b.id)}
+                  onClick={() => {
+                    setSelectedShiftId(null);
+                    setSelectedBranch(b.id);
+                  }}
                   className={`px-3 sm:px-4 py-1.5 rounded-lg text-[11px] font-bold transition-all whitespace-nowrap ${selectedBranch === b.id ? 'bg-[#1e40af] text-white shadow-lg' : 'text-gray-500 hover:text-gray-300'}`}
                 >
                   {b.name}
@@ -863,13 +887,24 @@ const RoomsContent = ({ rooms, onAdd, onEdit, onDelete, onQr }) => (
 );
 
 // ---------------------- ORDERS PAGE ----------------------
-const OrdersContent = ({ orders, onStatus }) => (
+const OrdersContent = ({ orders, onStatus, shifts = [], selectedShiftId, onSelectShift, onEndShift }) => (
   <div className="bg-[#0c0f17] rounded-[28px] p-5 md:p-7 border border-gray-800/40">
     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-      <h3 className="text-white font-bold text-lg">All Orders</h3>
-      <div className="relative">
-        <Search size={16} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500" />
-        <input type="text" placeholder="Search orders..." className="bg-[#111622] border border-gray-800 rounded-xl py-2 pl-9 pr-4 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500" />
+      <h3 className="text-white font-bold text-lg">Orders</h3>
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={selectedShiftId ?? ""}
+          onChange={(e) => onSelectShift(e.target.value ? Number(e.target.value) : null)}
+          className="bg-[#111622] border border-gray-800 rounded-xl py-2 px-3 text-sm text-white focus:outline-none focus:border-blue-500"
+        >
+          <option value="">Current shift</option>
+          {(shifts || []).filter((s) => !s.isCurrent).map((s) => (
+            <option key={s.id} value={s.id}>{formatShiftLabel(s)}</option>
+          ))}
+        </select>
+        <button onClick={onEndShift} className="bg-red-500/20 text-red-400 text-xs font-bold py-2 px-4 rounded-xl">
+          End Shift
+        </button>
       </div>
     </div>
     <div className="space-y-4">
@@ -882,6 +917,7 @@ const OrdersContent = ({ orders, onStatus }) => (
             <div>
               <p className="text-white font-bold text-sm">Order #{order.id}</p>
               <p className="text-[10px] text-gray-500">Room {order.room} • {order.time}</p>
+              {order.items && <p className="text-[11px] text-gray-300 mt-1 max-w-lg">{order.items}</p>}
             </div>
           </div>
           <div className="flex items-center gap-4">
@@ -1172,6 +1208,12 @@ const STAT_COLORS = {
   sessions: '#f59e0b',
   customers: '#3b82f6',
 };
+
+function formatShiftLabel(shift) {
+  const start = new Date(shift.startedAt).toLocaleString();
+  if (!shift.endedAt) return start;
+  return `${start} → ${new Date(shift.endedAt).toLocaleString()}`;
+}
 
 function normalizeStats(raw) {
   // لو الباك رجّع array جاهزة

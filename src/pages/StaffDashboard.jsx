@@ -29,8 +29,13 @@ export default function CyberProSystem() {
   const [error, setError] = useState("");
   const [rates, setRates] = useState({ single: 0, multi: 0 });
   const [qrRoom, setQrRoom] = useState(null);
+  const [shifts, setShifts] = useState([]);
+  const [selectedShiftId, setSelectedShiftId] = useState(null);
+  const [reloadToken, setReloadToken] = useState(0);
   const ratesRef = useRef(rates);
+  const viewingCurrentShiftRef = useRef(true);
   ratesRef.current = rates;
+  viewingCurrentShiftRef.current = !selectedShiftId || !!shifts.find((s) => s.id === selectedShiftId && s.isCurrent);
 
   useEffect(() => {
     if (user?.branchId) {
@@ -65,12 +70,13 @@ export default function CyberProSystem() {
 
     async function boot() {
       try {
-        const [roomsData, pending, products, txs, stgs] = await Promise.all([
+        const [roomsData, pending, products, txs, stgs, shfts] = await Promise.all([
           api.rooms(branchId),
-          api.pendingOrders(branchId).catch(() => []),
+          api.pendingOrders(branchId, selectedShiftId).catch(() => []),
           api.products(branchId).catch(() => []),
-          api.transactions(branchId).catch(() => []),
+          api.transactions(branchId, selectedShiftId).catch(() => []),
           api.settings(branchId).catch(() => null),
+          api.shifts(branchId).catch(() => []),
         ]);
 
         if (cancelled) return;
@@ -86,6 +92,7 @@ export default function CyberProSystem() {
         const history = normalizeTransactions(txs);
         setRevenueHistory(history);
         setTotalRevenue(history.reduce((sum, t) => sum + (t.amount || 0), 0));
+        setShifts(Array.isArray(shfts) ? shfts : []);
         setLoading(false);
       } catch (err) {
         if (!cancelled) {
@@ -97,7 +104,7 @@ export default function CyberProSystem() {
 
     boot();
     return () => { cancelled = true; };
-  }, [branchId]);
+  }, [branchId, selectedShiftId, reloadToken]);
 
   // ===== 2. SignalR للتحديثات اللحظية =====
   useEffect(() => {
@@ -106,8 +113,9 @@ export default function CyberProSystem() {
 
     connectOrdersHub({
       onOrderCreated: (payload) => {
-        const order = payload?.staffPending || payload?.admin;
-        if (order) setPendingOrders(prev => [normalizePendingOrder(order), ...prev]);
+        const pending = payload?.staffPending;
+        const order = Array.isArray(pending) ? pending[0] : (pending || payload?.admin);
+        if (order && viewingCurrentShiftRef.current) setPendingOrders(prev => [normalizePendingOrder(order), ...prev]);
       },
       onOrderUpdated: (order) => {
         setPendingOrders(prev => prev.filter(o => o.id !== order.id));
@@ -212,8 +220,10 @@ export default function CyberProSystem() {
         amount: finalAmount,
         time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
       };
-      setRevenueHistory(prev => [newTransaction, ...prev]);
-      setTotalRevenue(prev => prev + finalAmount);
+      if (viewingCurrentShiftRef.current) {
+        setRevenueHistory(prev => [newTransaction, ...prev]);
+        setTotalRevenue(prev => prev + finalAmount);
+      }
       setRooms(prev => prev.map(r => 
         r.id === id 
           ? { ...r, status: "idle", startTime: null, elapsed: 0, roomOrders: [], isCheckingOut: false, selectedMode: 'single', currentRate: ratesRef.current.single } 
@@ -236,10 +246,18 @@ export default function CyberProSystem() {
           ? { ...r, roomOrders: [...r.roomOrders, { name: order.itemName, price: order.price }] } 
           : r
       ));
-      setInventory(prev => prev.map(item => 
-        item.name === order.itemName ? { ...item, stock: Math.max(0, item.stock - 1) } : item
-      ));
       setPendingOrders(prev => prev.filter(o => o.id !== orderId));
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  const handleEndShift = async () => {
+    if (!window.confirm("Live lists reset. History stays under Past shifts.")) return;
+    try {
+      await api.endShift(branchId);
+      setSelectedShiftId(null);
+      setReloadToken((n) => n + 1);
     } catch (err) {
       alert(err.message);
     }
@@ -484,6 +502,12 @@ export default function CyberProSystem() {
           <div className="max-w-4xl mx-auto animate-in fade-in duration-500 text-right">
             <header className="mb-10">
               <h1 className="text-3xl font-black text-white mb-2">سجل الإيرادات</h1>
+              <ShiftToolbar
+                shifts={shifts}
+                selectedShiftId={selectedShiftId}
+                onSelectShift={setSelectedShiftId}
+                onEndShift={handleEndShift}
+              />
             </header>
             <div className="bg-[#0c0f17] rounded-[2.5rem] border border-white/5 overflow-hidden">
               <table className="w-full text-right">
@@ -506,7 +530,13 @@ export default function CyberProSystem() {
         {/* الطلبات المعلقة */}
         {view === "orders" && (
           <div className="max-w-4xl mx-auto animate-in duration-500 text-right text-white font-black">
-            <h1 className="text-3xl mb-10">الطلبات المعلقة</h1>
+            <h1 className="text-3xl mb-4">الطلبات المعلقة</h1>
+            <ShiftToolbar
+              shifts={shifts}
+              selectedShiftId={selectedShiftId}
+              onSelectShift={setSelectedShiftId}
+              onEndShift={handleEndShift}
+            />
             {pendingOrders.length === 0 ? (
               <div className="text-center text-gray-600 p-10 font-bold">لا توجد طلبات حالياً</div>
             ) : pendingOrders.map(order => (
@@ -551,17 +581,50 @@ export default function CyberProSystem() {
 }
 
 // ===== Normalizers =====
+function formatShiftLabel(shift) {
+  const start = new Date(shift.startedAt).toLocaleString();
+  if (!shift.endedAt) return start;
+  return `${start} → ${new Date(shift.endedAt).toLocaleString()}`;
+}
+
+function ShiftToolbar({ shifts = [], selectedShiftId, onSelectShift, onEndShift }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 mt-4 mb-6">
+      <select
+        value={selectedShiftId ?? ""}
+        onChange={(e) => onSelectShift(e.target.value ? Number(e.target.value) : null)}
+        className="bg-[#111622] border border-white/10 rounded-xl py-2 px-3 text-sm text-white focus:outline-none focus:border-blue-500"
+      >
+        <option value="">الوردية الحالية</option>
+        {shifts.filter((s) => !s.isCurrent).map((s) => (
+          <option key={s.id} value={s.id}>{formatShiftLabel(s)}</option>
+        ))}
+      </select>
+      <button
+        type="button"
+        onClick={onEndShift}
+        className="bg-red-500/20 text-red-400 text-xs font-black py-2 px-4 rounded-xl"
+      >
+        إنهاء الوردية
+      </button>
+    </div>
+  );
+}
+
 function normalizePending(list = []) {
   return (list || []).map(normalizePendingOrder);
 }
 
 function normalizePendingOrder(o) {
   if (!o) return { id: 0, roomName: "—", itemName: "—", price: 0, time: "" };
+  const lines = Array.isArray(o.items)
+    ? o.items.map((i) => `${i.qty || i.quantity || 1} x ${i.name || i.productName || ""}`).filter(Boolean).join(", ")
+    : (typeof o.items === "string" ? o.items : "");
   return {
     id: o.id,
     roomName: o.roomName || o.room?.name || "—",
-    itemName: o.itemName || o.productName || o.items?.[0]?.name || "—",
-    price: o.price || o.total || o.items?.[0]?.price || 0,
+    itemName: o.itemName || o.productName || lines || "—",
+    price: o.price || o.total || o.amount || 0,
     time: o.time || o.createdAt || "",
   };
 }
