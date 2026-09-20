@@ -1,287 +1,231 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Activity, LayoutDashboard, DoorOpen, ShoppingCart, Timer, Users,
   Package, BarChart3, UserCog, Layers, Settings, Menu, Bell,
-  ChevronDown, CreditCard, X, Edit, Trash2, Plus, Search
+  ChevronDown, CreditCard, X, Edit, Trash2, Plus, Search, LogOut
 } from 'lucide-react';
 import {
   LineChart, Line, ResponsiveContainer, XAxis, YAxis,
   Tooltip, AreaChart, Area, PieChart, Pie, Cell
 } from 'recharts';
+import { api, connectOrdersHub, getUser, getToken } from '../api';
 
 const CyberCafeDashboard = () => {
-  const branches = [
-    { id: 'main', name: 'Main Branch' },
-    { id: 'north', name: 'North Branch' },
-    { id: 'south', name: 'South Branch' },
-  ];
+  const navigate = useNavigate();
+  const user = getUser();
 
-  const [selectedBranch, setSelectedBranch] = useState('main');
+  const [branches, setBranches] = useState([]);
+  const [selectedBranch, setSelectedBranch] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [activeView, setActiveView] = useState('dashboard');
 
-  // Detect screen size for sidebar behavior
+  // بيانات الـ API
+  const [stats, setStats] = useState([]);
+  const [revenueData, setRevenueData] = useState([]);
+  const [pieData, setPieData] = useState([]);
+  const [topProducts, setTopProducts] = useState([]);
+  const [rooms, setRooms] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [sessions, setSessions] = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [staff, setStaff] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [settings, setSettings] = useState(null);
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const hubRef = useRef(null);
+
+  // ===== Responsive detection =====
   useEffect(() => {
     const checkScreen = () => {
       setIsMobile(window.innerWidth < 1024);
-      if (window.innerWidth >= 1024) {
-        setSidebarOpen(false);
-      }
+      if (window.innerWidth >= 1024) setSidebarOpen(false);
     };
     checkScreen();
     window.addEventListener('resize', checkScreen);
     return () => window.removeEventListener('resize', checkScreen);
   }, []);
 
-  // Full branch data for all sections
-  const branchData = {
-    main: {
-      stats: [
-        { label: "Total Revenue", value: "2,450", diff: "+12.5%", color: "#10b981", icon: <CreditCard />, bg: "rgba(16,185,129,0.1)" },
-        { label: "Total Orders", value: "18", diff: "+8.3%", color: "#8b5cf6", icon: <ShoppingCart />, bg: "rgba(139,92,246,0.1)" },
-        { label: "Active Sessions", value: "12", diff: "+5.7%", color: "#f59e0b", icon: <Timer />, bg: "rgba(245,158,11,0.1)" },
-        { label: "Total Customers", value: "32", diff: "+9.1%", color: "#3b82f6", icon: <Users />, bg: "rgba(59,130,246,0.1)" },
-      ],
-      revenueData: [
-        { day: 'Sun', rev: 1200 }, { day: 'Mon', rev: 1800 }, { day: 'Tue', rev: 2450 },
-        { day: 'Wed', rev: 1900 }, { day: 'Thu', rev: 2100 }, { day: 'Fri', rev: 2800 }, { day: 'Sat', rev: 2300 }
-      ],
-      pieData: [
-        { name: 'Cash', value: 1650, color: '#10b981' },
-        { name: 'Card', value: 600, color: '#6366f1' },
-        { name: 'Online', value: 200, color: '#3b82f6' },
-      ],
-      rooms: [
-        { id: 1, status: 'Occupied', user: 'Ahmed Samir', time: '01:25:30', price: '85 EGP' },
-        { id: 2, status: 'Available', user: '-', time: '-', price: '-' },
-        { id: 3, status: 'Occupied', user: 'Mazen Ashraf', time: '00:45:10', price: '60 EGP' },
-        { id: 4, status: 'Available', user: '-', time: '-', price: '-' },
-        { id: 5, status: 'Occupied', user: 'Youssef Tarek', time: '02:15:45', price: '125 EGP' },
-        { id: 6, status: 'Available', user: '-', time: '-', price: '-' },
-        { id: 7, status: 'Occupied', user: 'Karim Mohamed', time: '01:10:20', price: '95 EGP' },
-        { id: 8, status: 'Available', user: '-', time: '-', price: '-' },
-      ],
-      orders: [
-        { id: 101, room: 3, items: "2 x Coffee", time: "2 min ago", status: "NEW", color: "#ef4444", emoji: "☕", amount: 60 },
-        { id: 102, room: 1, items: "1 x Pepsi", time: "4 min ago", status: "PREPARING", color: "#f59e0b", emoji: "🥤", amount: 25 },
-        { id: 103, room: 5, items: "1 x Tea", time: "6 min ago", status: "READY", color: "#10b981", emoji: "🍵", amount: 20 },
-        { id: 104, room: 7, items: "2 x Water", time: "10 min ago", status: "DELIVERED", color: "#3b82f6", emoji: "💧", amount: 30 },
-      ],
-      sessions: [
-        { room: 1, started: "2 hours ago", duration: "01:25:30" },
-        { room: 3, started: "1 hour ago", duration: "00:45:10" },
-        { room: 5, started: "3 hours ago", duration: "02:15:45" },
-        { room: 7, started: "1.5 hours ago", duration: "01:10:20" },
-      ],
-      customers: [
-        { name: 'Ahmed Samir', email: 'ahmed.samir@example.com', phone: '+20 101 234 567', spent: 1250 },
-        { name: 'Mazen Ashraf', email: 'mazen.ashraf@example.com', phone: '+20 102 345 678', spent: 870 },
-        { name: 'Youssef Tarek', email: 'youssef.tarek@example.com', phone: '+20 103 456 789', spent: 2100 },
-        { name: 'Karim Mohamed', email: 'karim.mohamed@example.com', phone: '+20 104 567 890', spent: 540 },
-      ],
-      products: [
-        { name: 'Coffee', price: 15, stock: 45 },
-        { name: 'Pepsi', price: 12, stock: 32 },
-        { name: 'Tea', price: 10, stock: 28 },
-        { name: 'Water', price: 8, stock: 50 },
-        { name: 'Sandwich', price: 35, stock: 20 },
-        { name: 'Cake', price: 25, stock: 15 },
-      ],
-      topProducts: [
-        { label: 'Coffee', val: 45, max: 50, emoji: '☕', color: '#6366f1' },
-        { label: 'Pepsi', val: 32, max: 50, emoji: '🥤', color: '#6366f1' },
-        { label: 'Tea', val: 28, max: 50, emoji: '🍵', color: '#6366f1' },
-        { label: 'Water', val: 20, max: 50, emoji: '💧', color: '#6366f1' },
-      ],
-      staff: [
-        { name: 'John Doe', role: 'Admin', initial: 'J' },
-        { name: 'Jane Smith', role: 'Staff', initial: 'J' },
-        { name: 'Mike Johnson', role: 'Staff', initial: 'M' },
-        { name: 'Sarah Lee', role: 'Admin', initial: 'S' },
-      ],
-      categories: ['Beverages', 'Snacks', 'Meals', 'Desserts'],
-      settings: {
-        branchName: 'Main Branch',
-        hourlyRate: '15 EGP / hour',
-        taxRate: '14%'
-      }
-    },
-    north: {
-      stats: [
-        { label: "Total Revenue", value: "1,890", diff: "+8.2%", color: "#10b981", icon: <CreditCard />, bg: "rgba(16,185,129,0.1)" },
-        { label: "Total Orders", value: "14", diff: "+4.1%", color: "#8b5cf6", icon: <ShoppingCart />, bg: "rgba(139,92,246,0.1)" },
-        { label: "Active Sessions", value: "8", diff: "+2.3%", color: "#f59e0b", icon: <Timer />, bg: "rgba(245,158,11,0.1)" },
-        { label: "Total Customers", value: "21", diff: "+6.4%", color: "#3b82f6", icon: <Users />, bg: "rgba(59,130,246,0.1)" },
-      ],
-      revenueData: [
-        { day: 'Sun', rev: 900 }, { day: 'Mon', rev: 1400 }, { day: 'Tue', rev: 1890 },
-        { day: 'Wed', rev: 1500 }, { day: 'Thu', rev: 1700 }, { day: 'Fri', rev: 2100 }, { day: 'Sat', rev: 1900 }
-      ],
-      pieData: [
-        { name: 'Cash', value: 1100, color: '#10b981' },
-        { name: 'Card', value: 500, color: '#6366f1' },
-        { name: 'Online', value: 290, color: '#3b82f6' },
-      ],
-      rooms: [
-        { id: 1, status: 'Occupied', user: 'Nourhan Ali', time: '02:10:15', price: '110 EGP' },
-        { id: 2, status: 'Available', user: '-', time: '-', price: '-' },
-        { id: 3, status: 'Occupied', user: 'Mahmoud Hany', time: '00:35:20', price: '40 EGP' },
-        { id: 4, status: 'Available', user: '-', time: '-', price: '-' },
-        { id: 5, status: 'Occupied', user: 'Rana Khaled', time: '01:50:30', price: '95 EGP' },
-        { id: 6, status: 'Available', user: '-', time: '-', price: '-' },
-        { id: 7, status: 'Occupied', user: 'Omar Hesham', time: '00:55:10', price: '55 EGP' },
-        { id: 8, status: 'Available', user: '-', time: '-', price: '-' },
-      ],
-      orders: [
-        { id: 201, room: 1, items: "1 x Coffee, 1 x Cake", time: "5 min ago", status: "NEW", color: "#ef4444", emoji: "☕", amount: 55 },
-        { id: 202, room: 3, items: "2 x Water", time: "8 min ago", status: "PREPARING", color: "#f59e0b", emoji: "💧", amount: 16 },
-        { id: 203, room: 5, items: "1 x Sandwich", time: "12 min ago", status: "READY", color: "#10b981", emoji: "🥪", amount: 35 },
-        { id: 204, room: 7, items: "1 x Pepsi", time: "15 min ago", status: "DELIVERED", color: "#3b82f6", emoji: "🥤", amount: 12 },
-      ],
-      sessions: [
-        { room: 1, started: "2.5 hours ago", duration: "02:10:15" },
-        { room: 3, started: "45 min ago", duration: "00:35:20" },
-        { room: 5, started: "2 hours ago", duration: "01:50:30" },
-        { room: 7, started: "1 hour ago", duration: "00:55:10" },
-      ],
-      customers: [
-        { name: 'Nourhan Ali', email: 'nourhan.ali@example.com', phone: '+20 111 222 333', spent: 980 },
-        { name: 'Mahmoud Hany', email: 'mahmoud.hany@example.com', phone: '+20 112 233 444', spent: 420 },
-        { name: 'Rana Khaled', email: 'rana.khaled@example.com', phone: '+20 113 344 555', spent: 1500 },
-        { name: 'Omar Hesham', email: 'omar.hesham@example.com', phone: '+20 114 455 666', spent: 310 },
-      ],
-      products: [
-        { name: 'Coffee', price: 15, stock: 30 },
-        { name: 'Pepsi', price: 12, stock: 25 },
-        { name: 'Tea', price: 10, stock: 20 },
-        { name: 'Water', price: 8, stock: 40 },
-        { name: 'Sandwich', price: 35, stock: 12 },
-        { name: 'Cake', price: 25, stock: 18 },
-      ],
-      topProducts: [
-        { label: 'Coffee', val: 30, max: 50, emoji: '☕', color: '#6366f1' },
-        { label: 'Pepsi', val: 25, max: 50, emoji: '🥤', color: '#6366f1' },
-        { label: 'Tea', val: 20, max: 50, emoji: '🍵', color: '#6366f1' },
-        { label: 'Water', val: 18, max: 50, emoji: '💧', color: '#6366f1' },
-      ],
-      staff: [
-        { name: 'Hossam Eldin', role: 'Admin', initial: 'H' },
-        { name: 'Mona Gamal', role: 'Staff', initial: 'M' },
-        { name: 'Karim Waleed', role: 'Staff', initial: 'K' },
-      ],
-      categories: ['Beverages', 'Snacks', 'Meals'],
-      settings: {
-        branchName: 'North Branch',
-        hourlyRate: '14 EGP / hour',
-        taxRate: '14%'
-      }
-    },
-    south: {
-      stats: [
-        { label: "Total Revenue", value: "3,120", diff: "+15.2%", color: "#10b981", icon: <CreditCard />, bg: "rgba(16,185,129,0.1)" },
-        { label: "Total Orders", value: "23", diff: "+11.4%", color: "#8b5cf6", icon: <ShoppingCart />, bg: "rgba(139,92,246,0.1)" },
-        { label: "Active Sessions", value: "15", diff: "+9.8%", color: "#f59e0b", icon: <Timer />, bg: "rgba(245,158,11,0.1)" },
-        { label: "Total Customers", value: "45", diff: "+13.5%", color: "#3b82f6", icon: <Users />, bg: "rgba(59,130,246,0.1)" },
-      ],
-      revenueData: [
-        { day: 'Sun', rev: 1500 }, { day: 'Mon', rev: 2100 }, { day: 'Tue', rev: 3120 },
-        { day: 'Wed', rev: 2700 }, { day: 'Thu', rev: 2900 }, { day: 'Fri', rev: 3500 }, { day: 'Sat', rev: 3100 }
-      ],
-      pieData: [
-        { name: 'Cash', value: 2100, color: '#10b981' },
-        { name: 'Card', value: 720, color: '#6366f1' },
-        { name: 'Online', value: 300, color: '#3b82f6' },
-      ],
-      rooms: [
-        { id: 1, status: 'Occupied', user: 'Laila Ezz', time: '03:20:00', price: '170 EGP' },
-        { id: 2, status: 'Occupied', user: 'Mohamed Salah', time: '01:55:30', price: '105 EGP' },
-        { id: 3, status: 'Available', user: '-', time: '-', price: '-' },
-        { id: 4, status: 'Occupied', user: 'Yasmin Adel', time: '00:30:15', price: '50 EGP' },
-        { id: 5, status: 'Available', user: '-', time: '-', price: '-' },
-        { id: 6, status: 'Occupied', user: 'Tamer Hosny', time: '02:40:20', price: '145 EGP' },
-        { id: 7, status: 'Available', user: '-', time: '-', price: '-' },
-        { id: 8, status: 'Occupied', user: 'Sohair Elbably', time: '01:05:45', price: '85 EGP' },
-      ],
-      orders: [
-        { id: 301, room: 1, items: "2 x Coffee, 1 x Sandwich", time: "3 min ago", status: "NEW", color: "#ef4444", emoji: "☕", amount: 95 },
-        { id: 302, room: 2, items: "1 x Pepsi, 1 x Cake", time: "7 min ago", status: "PREPARING", color: "#f59e0b", emoji: "🥤", amount: 47 },
-        { id: 303, room: 4, items: "1 x Tea", time: "9 min ago", status: "READY", color: "#10b981", emoji: "🍵", amount: 20 },
-        { id: 304, room: 6, items: "3 x Water", time: "14 min ago", status: "DELIVERED", color: "#3b82f6", emoji: "💧", amount: 24 },
-        { id: 305, room: 8, items: "1 x Coffee", time: "18 min ago", status: "DELIVERED", color: "#3b82f6", emoji: "☕", amount: 15 },
-      ],
-      sessions: [
-        { room: 1, started: "3.5 hours ago", duration: "03:20:00" },
-        { room: 2, started: "2 hours ago", duration: "01:55:30" },
-        { room: 4, started: "35 min ago", duration: "00:30:15" },
-        { room: 6, started: "3 hours ago", duration: "02:40:20" },
-        { room: 8, started: "1.2 hours ago", duration: "01:05:45" },
-      ],
-      customers: [
-        { name: 'Laila Ezz', email: 'laila.ezz@example.com', phone: '+20 121 345 678', spent: 2200 },
-        { name: 'Mohamed Salah', email: 'mohamed.salah@example.com', phone: '+20 122 456 789', spent: 1350 },
-        { name: 'Yasmin Adel', email: 'yasmin.adel@example.com', phone: '+20 123 567 890', spent: 890 },
-        { name: 'Tamer Hosny', email: 'tamer.hosny@example.com', phone: '+20 124 678 901', spent: 1750 },
-        { name: 'Sohair Elbably', email: 'sohair.elbably@example.com', phone: '+20 125 789 012', spent: 620 },
-      ],
-      products: [
-        { name: 'Coffee', price: 15, stock: 55 },
-        { name: 'Pepsi', price: 12, stock: 48 },
-        { name: 'Tea', price: 10, stock: 35 },
-        { name: 'Water', price: 8, stock: 60 },
-        { name: 'Sandwich', price: 35, stock: 28 },
-        { name: 'Cake', price: 25, stock: 22 },
-      ],
-      topProducts: [
-        { label: 'Coffee', val: 55, max: 60, emoji: '☕', color: '#6366f1' },
-        { label: 'Pepsi', val: 48, max: 60, emoji: '🥤', color: '#6366f1' },
-        { label: 'Tea', val: 35, max: 60, emoji: '🍵', color: '#6366f1' },
-        { label: 'Water', val: 30, max: 60, emoji: '💧', color: '#6366f1' },
-      ],
-      staff: [
-        { name: 'Samira Ahmed', role: 'Admin', initial: 'S' },
-        { name: 'Amr Diab', role: 'Staff', initial: 'A' },
-        { name: 'Hend Sabry', role: 'Staff', initial: 'H' },
-        { name: 'Khaled El Sawy', role: 'Admin', initial: 'K' },
-      ],
-      categories: ['Beverages', 'Snacks', 'Meals', 'Desserts', 'Breakfast'],
-      settings: {
-        branchName: 'South Branch',
-        hourlyRate: '16 EGP / hour',
-        taxRate: '14%'
-      }
-    },
+  // ===== Logout =====
+  const handleLogout = () => {
+    api.logout();
+    navigate('/login');
   };
 
-  const data = branchData[selectedBranch] || branchData.main;
+  // ===== تحميل الـ branches أول حاجة =====
+  useEffect(() => {
+    let cancelled = false;
+    api.branches()
+      .then((list) => {
+        if (cancelled) return;
+        const arr = Array.isArray(list) ? list : [];
+        setBranches(arr);
+        // اختار فرع المستخدم أو أول فرع
+        const userBranch = user?.branchId;
+        const initial = arr.find(b => b.id === userBranch) || arr[0];
+        setSelectedBranch(initial?.id ?? null);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err.message || "فشل تحميل الفروع");
+          setLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [user?.branchId]);
 
-  // Function to render content based on activeView, passing branch-specific data
+  // ===== تحميل بيانات الفرع المختار =====
+  useEffect(() => {
+    if (selectedBranch === null || selectedBranch === undefined) return;
+    let cancelled = false;
+    setLoading(true);
+
+    Promise.all([
+      api.dashboard(selectedBranch).catch(() => null),
+      api.rooms(selectedBranch).catch(() => []),
+      api.orders(selectedBranch).catch(() => []),
+      api.customers(selectedBranch).catch(() => []),
+      api.products(selectedBranch).catch(() => []),
+      api.staff().catch(() => []),
+      api.categories(selectedBranch).catch(() => []),
+      api.settings(selectedBranch).catch(() => null),
+      api.sessions(selectedBranch, true).catch(() => []),
+    ]).then(([dash, rms, ords, custs, prods, stf, cats, stgs, sess]) => {
+      if (cancelled) return;
+
+      // Dashboard
+      setStats(normalizeStats(dash?.stats));
+      setRevenueData(normalizeRevenue(dash?.revenueData));
+      setPieData(normalizePie(dash?.pieData));
+      setTopProducts(normalizeTopProducts(dash?.topProducts));
+
+      setRooms(normalizeRooms(rms));
+      setOrders(normalizeOrders(ords));
+      setSessions(normalizeSessions(sess));
+      setCustomers(normalizeCustomers(custs));
+      setProducts(normalizeProducts(prods));
+      setStaff(normalizeStaff(stf));
+      setCategories(normalizeCategories(cats));
+      setSettings(normalizeSettings(stgs));
+
+      setLoading(false);
+    }).catch((err) => {
+      if (!cancelled) {
+        setError(err.message || "فشل تحميل البيانات");
+        setLoading(false);
+      }
+    });
+
+    return () => { cancelled = true; };
+  }, [selectedBranch]);
+
+  // ===== SignalR للتحديثات اللحظية =====
+  useEffect(() => {
+    if (!getToken()) return;
+    let conn;
+
+    connectOrdersHub({
+      onOrderCreated: (payload) => {
+        const order = payload?.admin;
+        if (order) setOrders(prev => [normalizeOrder(order), ...prev]);
+      },
+      onOrderUpdated: (order) => {
+        setOrders(prev => prev.map(o => o.id === order.id ? normalizeOrder(order) : o));
+      },
+      onRoomUpdated: (room) => {
+        setRooms(prev => {
+          const mapped = normalizeRoom(room);
+          const exists = prev.find(r => r.id === mapped.id);
+          return exists
+            ? prev.map(r => r.id === mapped.id ? mapped : r)
+            : [...prev, mapped];
+        });
+      },
+      onSessionEnded: ({ roomId }) => {
+        setSessions(prev => prev.filter(s => s.room !== roomId));
+        setRooms(prev => prev.map(r => 
+          r.id === roomId ? { ...r, status: 'Available', user: '-', time: '-', price: '-' } : r
+        ));
+      },
+    }).then(c => { conn = c; hubRef.current = c; }).catch(console.error);
+
+    return () => { conn?.stop(); hubRef.current = null; };
+  }, []);
+
+  // ===== renderContent =====
   const renderContent = () => {
     switch (activeView) {
       case 'dashboard':
-        return <DashboardContent data={data} />;
+        return (
+          <DashboardContent
+            stats={stats}
+            revenueData={revenueData}
+            pieData={pieData}
+            topProducts={topProducts}
+            rooms={rooms}
+            orders={orders}
+          />
+        );
       case 'rooms':
-        return <RoomsContent rooms={data.rooms} />;
+        return <RoomsContent rooms={rooms} onRefresh={() => refreshAll()} />;
       case 'orders':
-        return <OrdersContent orders={data.orders} />;
+        return <OrdersContent orders={orders} />;
       case 'sessions':
-        return <SessionsContent sessions={data.sessions} />;
+        return <SessionsContent sessions={sessions} />;
       case 'customers':
-        return <CustomersContent customers={data.customers} />;
+        return <CustomersContent customers={customers} />;
       case 'products':
-        return <ProductsContent products={data.products} />;
+        return <ProductsContent products={products} />;
       case 'reports':
-        return <ReportsContent revenueData={data.revenueData} pieData={data.pieData} topProducts={data.topProducts} />;
+        return <ReportsContent revenueData={revenueData} pieData={pieData} topProducts={topProducts} />;
       case 'staff':
-        return <StaffContent staff={data.staff} />;
+        return <StaffContent staff={staff} />;
       case 'categories':
-        return <CategoriesContent categories={data.categories} />;
+        return <CategoriesContent categories={categories} />;
       case 'settings':
-        return <SettingsContent settings={data.settings} />;
+        return <SettingsContent settings={settings} />;
       default:
-        return <DashboardContent data={data} />;
+        return null;
     }
   };
+
+  // ===== refresh =====
+  const refreshAll = () => {
+    if (selectedBranch == null) return;
+    setSelectedBranch(prev => prev); // trigger effect
+  };
+
+  // ===== شاشة تحميل =====
+  if (loading && branches.length === 0) {
+    return (
+      <div className="flex h-screen bg-[#07090d] items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-gray-500 font-bold text-sm">جاري التحميل...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ===== شاشة خطأ =====
+  if (error && branches.length === 0) {
+    return (
+      <div className="flex h-screen bg-[#07090d] items-center justify-center p-6">
+        <div className="bg-[#0f172a] border border-red-500/20 rounded-[28px] p-8 max-w-md text-center">
+          <div className="text-red-500 text-5xl mb-4">⚠️</div>
+          <h2 className="text-white font-black text-lg mb-2">تعذّر التحميل</h2>
+          <p className="text-gray-500 text-sm">{error}</p>
+          <button onClick={handleLogout} className="mt-6 px-6 py-3 bg-red-600/10 text-red-500 rounded-xl font-bold">
+            تسجيل الخروج
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-[#07090d] text-gray-400 font-sans overflow-hidden">
@@ -340,7 +284,7 @@ const CyberCafeDashboard = () => {
               <SidebarItem 
                 icon={<ShoppingCart size={18}/>} 
                 label="Orders" 
-                badge={data.orders.length.toString()} 
+                badge={orders.length.toString()} 
                 active={activeView === 'orders'} 
                 onClick={() => { setActiveView('orders'); if(isMobile) setSidebarOpen(false); }}
               />
@@ -395,20 +339,31 @@ const CyberCafeDashboard = () => {
             </nav>
           </div>
 
+          {/* Logout */}
+          <button
+            onClick={handleLogout}
+            className="w-full flex items-center gap-3 px-3.5 py-3 rounded-[16px] bg-red-500/5 border border-red-500/20 text-red-400 hover:bg-red-500/10 transition-all"
+          >
+            <LogOut size={18} />
+            <span className="text-[12px] font-bold tracking-wide">تسجيل الخروج</span>
+          </button>
+
           {/* Today's Overview Sidebar Card */}
-          <div className="hidden sm:block bg-[#111622] rounded-2xl p-4 border border-gray-800/50">
-             <p className="text-[10px] text-gray-500 font-medium">Today's Overview</p>
-             <p className="text-[11px] mt-3 text-gray-300">Total Revenue</p>
-             <p className="text-xl font-bold text-[#10b981] mt-0.5">{data.stats[0].value} <span className="text-[10px] font-medium text-gray-500">EGP</span></p>
-             <p className="text-[10px] text-[#10b981] mt-1 font-bold">{data.stats[0].diff} <span className="text-gray-600 font-normal">from yesterday</span></p>
-             <div className="h-12 w-full mt-3">
+          {stats[0] && (
+            <div className="hidden sm:block bg-[#111622] rounded-2xl p-4 border border-gray-800/50">
+              <p className="text-[10px] text-gray-500 font-medium">Today's Overview</p>
+              <p className="text-[11px] mt-3 text-gray-300">Total Revenue</p>
+              <p className="text-xl font-bold text-[#10b981] mt-0.5">{stats[0].value} <span className="text-[10px] font-medium text-gray-500">EGP</span></p>
+              <p className="text-[10px] text-[#10b981] mt-1 font-bold">{stats[0].diff} <span className="text-gray-600 font-normal">from yesterday</span></p>
+              <div className="h-12 w-full mt-3">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={data.revenueData}>
+                  <LineChart data={revenueData}>
                     <Line type="monotone" dataKey="rev" stroke="#6366f1" strokeWidth={2} dot={false} />
                   </LineChart>
                 </ResponsiveContainer>
-             </div>
-          </div>
+              </div>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -424,7 +379,9 @@ const CyberCafeDashboard = () => {
               onClick={() => setSidebarOpen(true)}
             />
             <div>
-              <h2 className="text-white text-sm font-semibold flex items-center gap-2">Welcome back, Admin 👋</h2>
+              <h2 className="text-white text-sm font-semibold flex items-center gap-2">
+                Welcome back, {user?.name || 'Admin'} 👋
+              </h2>
               <p className="text-[11px] text-gray-500 mt-0.5 hidden sm:block">Here's what's happening today.</p>
             </div>
           </div>
@@ -449,10 +406,12 @@ const CyberCafeDashboard = () => {
               </div>
               <div className="flex items-center gap-3">
                 <div className="text-right hidden xs:block">
-                  <p className="text-xs font-bold text-white leading-none">Admin</p>
-                  <p className="text-[10px] text-gray-500 mt-1">Super Admin</p>
+                  <p className="text-xs font-bold text-white leading-none">{user?.name || 'Admin'}</p>
+                  <p className="text-[10px] text-gray-500 mt-1">{user?.role || 'Super Admin'}</p>
                 </div>
-                <img src="https://i.pravatar.cc/150?u=admin" className="w-9 h-9 rounded-xl border border-gray-700 shadow-xl" alt="profile" />
+                <div className="w-9 h-9 rounded-xl bg-[#1e40af] border border-gray-700 shadow-xl flex items-center justify-center text-white font-bold">
+                  {(user?.name || 'A').charAt(0).toUpperCase()}
+                </div>
               </div>
             </div>
           </div>
@@ -462,7 +421,9 @@ const CyberCafeDashboard = () => {
           {/* Date Selector */}
           <div className="flex justify-end mb-6">
             <div className="bg-[#111622] text-[11px] font-bold text-gray-400 px-4 py-2 rounded-xl border border-gray-800 flex items-center gap-2 cursor-pointer hover:border-gray-600 transition-all">
-              <Activity size={14} className="text-blue-500" /> Today, 18 May 2024 <ChevronDown size={14} />
+              <Activity size={14} className="text-blue-500" /> 
+              {new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
+              <ChevronDown size={14} />
             </div>
           </div>
 
@@ -485,21 +446,21 @@ const SidebarItem = ({ icon, label, active, badge, onClick }) => (
       <span className={`${active ? 'text-white' : 'text-gray-500 group-hover:text-blue-400 transition-colors'}`}>{icon}</span>
       <span className="text-[12px] font-bold tracking-wide">{label}</span>
     </div>
-    {badge && <span className="bg-[#6366f1] text-white text-[9px] font-black px-2 py-0.5 rounded-lg shadow-lg">{badge}</span>}
+    {badge && badge !== '0' && <span className="bg-[#6366f1] text-white text-[9px] font-black px-2 py-0.5 rounded-lg shadow-lg">{badge}</span>}
   </div>
 );
 
 // ---------------------- DASHBOARD CONTENT ----------------------
-const DashboardContent = ({ data }) => (
+const DashboardContent = ({ stats, revenueData, pieData, topProducts, rooms, orders }) => (
   <>
     {/* Stats Cards Row */}
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 mb-8">
-      {data.stats.map((s, i) => (
+      {stats.map((s, i) => (
         <div key={i} className="bg-[#0c0f17] border border-gray-800/60 rounded-[24px] p-4 md:p-5 relative overflow-hidden group hover:border-gray-700 transition-all">
           <div className="absolute top-0 left-0 w-full h-[2px]" style={{ background: `linear-gradient(90deg, transparent, ${s.color}, transparent)` }}></div>
           <div className="flex justify-between items-start relative z-10">
             <div className="p-2 rounded-xl border border-gray-800" style={{ backgroundColor: s.bg, color: s.color }}>
-              {React.cloneElement(s.icon, { size: 20 })}
+              <StatsIcon name={s.icon} />
             </div>
             <div className="text-right">
               <p className="text-[10px] font-bold text-gray-500 uppercase tracking-tighter">{s.label}</p>
@@ -509,7 +470,7 @@ const DashboardContent = ({ data }) => (
           </div>
           <div className="mt-4 h-8 opacity-40 group-hover:opacity-100 transition-opacity">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={data.revenueData}>
+              <AreaChart data={revenueData}>
                 <defs>
                   <linearGradient id={`color-${i}`} x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor={s.color} stopOpacity={0.3}/>
@@ -536,7 +497,7 @@ const DashboardContent = ({ data }) => (
           </div>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 md:gap-4">
-          {data.rooms.map(room => (
+          {rooms.map(room => (
             <div key={room.id} className={`p-3 md:p-4 rounded-[20px] border transition-all hover:scale-[1.02] ${room.status === 'Occupied' ? 'bg-[#ef4444]/[0.03] border-[#ef4444]/20' : 'bg-[#10b981]/[0.03] border-[#10b981]/20'}`}>
               <div className="flex justify-between items-center mb-3">
                 <div className={`p-1.5 rounded-lg ${room.status === 'Occupied' ? 'bg-[#ef4444]/10 text-[#ef4444]' : 'bg-[#10b981]/10 text-[#10b981]'}`}>
@@ -553,7 +514,6 @@ const DashboardContent = ({ data }) => (
             </div>
           ))}
         </div>
-        <button className="w-full mt-7 py-3 bg-[#111622] rounded-2xl text-[11px] font-bold text-gray-400 border border-gray-800 hover:bg-gray-800 hover:text-white transition-all tracking-wide">View All Rooms</button>
       </div>
 
       <div className="bg-[#0c0f17] rounded-[28px] p-5 md:p-7 border border-gray-800/40 flex flex-col">
@@ -562,8 +522,16 @@ const DashboardContent = ({ data }) => (
           <span className="text-[11px] font-bold text-blue-500 cursor-pointer hover:underline">View All</span>
         </div>
         <div className="space-y-7 flex-1">
-          {data.orders.slice(0, 4).map(order => (
-            <OrderItem key={order.id} room={order.room} items={order.items} time={order.time} status={order.status} color={order.color} emoji={order.emoji} />
+          {orders.slice(0, 4).map(order => (
+            <OrderItem 
+              key={order.id} 
+              room={order.room} 
+              items={order.items} 
+              time={order.time} 
+              status={order.status} 
+              color={order.color} 
+              emoji={order.emoji} 
+            />
           ))}
         </div>
       </div>
@@ -577,7 +545,7 @@ const DashboardContent = ({ data }) => (
           <span className="text-[11px] text-blue-500 font-bold">View All</span>
         </div>
         <div className="space-y-5">
-          {data.topProducts.map((prod, idx) => (
+          {topProducts.map((prod, idx) => (
             <ProductRow key={idx} label={prod.label} val={prod.val} max={prod.max} emoji={prod.emoji} color={prod.color} />
           ))}
         </div>
@@ -592,7 +560,7 @@ const DashboardContent = ({ data }) => (
         </div>
         <div className="h-40 w-full mt-4">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data.revenueData}>
+            <AreaChart data={revenueData}>
               <defs>
                 <linearGradient id="mainRev" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.3}/>
@@ -613,8 +581,8 @@ const DashboardContent = ({ data }) => (
           <div className="w-32 h-32 relative">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
-                <Pie data={data.pieData} innerRadius={35} outerRadius={50} paddingAngle={8} dataKey="value">
-                  {data.pieData.map((entry, index) => (
+                <Pie data={pieData} innerRadius={35} outerRadius={50} paddingAngle={8} dataKey="value">
+                  {pieData.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={entry.color} />
                   ))}
                 </Pie>
@@ -626,14 +594,14 @@ const DashboardContent = ({ data }) => (
             </div>
           </div>
           <div className="flex-1 space-y-3 pl-0 sm:pl-4">
-            {data.pieData.map((item, i) => {
-              const total = data.pieData.reduce((sum, curr) => sum + curr.value, 0);
+            {pieData.map((item, i) => {
+              const total = pieData.reduce((sum, curr) => sum + curr.value, 0);
               return (
                 <div key={i} className="flex items-center gap-3">
                   <div className="w-2 h-2 rounded-full" style={{backgroundColor: item.color}}></div>
                   <div>
                     <p className="text-[10px] text-white font-bold leading-none">{item.name}</p>
-                    <p className="text-[8px] text-gray-500 mt-1">{item.value} EGP ({Math.round(item.value/total*100)}%)</p>
+                    <p className="text-[8px] text-gray-500 mt-1">{item.value} EGP ({total ? Math.round(item.value/total*100) : 0}%)</p>
                   </div>
                 </div>
               );
@@ -703,7 +671,9 @@ const OrdersContent = ({ orders }) => (
       </div>
     </div>
     <div className="space-y-4">
-      {orders.map(order => (
+      {orders.length === 0 ? (
+        <div className="text-center py-10 text-gray-600 font-bold">لا توجد طلبات</div>
+      ) : orders.map(order => (
         <div key={order.id} className="flex flex-wrap items-center justify-between p-4 bg-[#111622] rounded-2xl border border-gray-800/50">
           <div className="flex items-center gap-4">
             <div className="w-10 h-10 rounded-xl bg-gray-800 flex items-center justify-center text-xl">{order.emoji}</div>
@@ -730,7 +700,9 @@ const SessionsContent = ({ sessions }) => (
   <div className="bg-[#0c0f17] rounded-[28px] p-5 md:p-7 border border-gray-800/40">
     <h3 className="text-white font-bold text-lg mb-6">Active Sessions</h3>
     <div className="grid gap-4">
-      {sessions.map((session, idx) => (
+      {sessions.length === 0 ? (
+        <div className="text-center py-10 text-gray-600 font-bold">لا توجد جلسات نشطة</div>
+      ) : sessions.map((session, idx) => (
         <div key={idx} className="flex flex-wrap items-center justify-between p-4 bg-[#111622] rounded-2xl border border-gray-800/50">
           <div>
             <p className="text-white font-bold">Room {session.room}</p>
@@ -897,15 +869,15 @@ const SettingsContent = ({ settings }) => (
     <h3 className="text-white font-bold text-lg mb-6">System Settings</h3>
     <div className="space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-[#111622] rounded-2xl">
-        <div><p className="text-white font-medium">Branch Name</p><p className="text-[10px] text-gray-500">{settings.branchName}</p></div>
+        <div><p className="text-white font-medium">Branch Name</p><p className="text-[10px] text-gray-500">{settings?.branchName || '—'}</p></div>
         <button className="text-blue-400 text-xs font-bold">Edit</button>
       </div>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-[#111622] rounded-2xl">
-        <div><p className="text-white font-medium">Hourly Rate</p><p className="text-[10px] text-gray-500">{settings.hourlyRate}</p></div>
+        <div><p className="text-white font-medium">Hourly Rate</p><p className="text-[10px] text-gray-500">{settings?.hourlyRate || '—'}</p></div>
         <button className="text-blue-400 text-xs font-bold">Edit</button>
       </div>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-[#111622] rounded-2xl">
-        <div><p className="text-white font-medium">Tax Rate</p><p className="text-[10px] text-gray-500">{settings.taxRate}</p></div>
+        <div><p className="text-white font-medium">Tax Rate</p><p className="text-[10px] text-gray-500">{settings?.taxRate || '—'}</p></div>
         <button className="text-blue-400 text-xs font-bold">Edit</button>
       </div>
     </div>
@@ -949,10 +921,179 @@ const ProductRow = ({ label, val, max, emoji, color }) => (
         <span className="text-[11px] text-gray-400 font-black">{val}</span>
       </div>
       <div className="w-full bg-[#111622] h-2 rounded-full border border-gray-800/50 overflow-hidden">
-        <div className="h-full rounded-full transition-all duration-1000 ease-out" style={{ width: `${(val/max)*100}%`, backgroundColor: color, boxShadow: `0 0 10px ${color}40` }}></div>
+        <div className="h-full rounded-full transition-all duration-1000 ease-out" style={{ width: `${max ? (val/max)*100 : 0}%`, backgroundColor: color, boxShadow: `0 0 10px ${color}40` }}></div>
       </div>
     </div>
   </div>
 );
+
+// ---------------------- Stats Icon Mapper ----------------------
+const StatsIcon = ({ name }) => {
+  const props = { size: 20 };
+  switch (name) {
+    case 'revenue': return <CreditCard {...props} />;
+    case 'orders': return <ShoppingCart {...props} />;
+    case 'sessions': return <Timer {...props} />;
+    case 'customers': return <Users {...props} />;
+    default: return <CreditCard {...props} />;
+  }
+};
+
+// ================================================================
+// NORMALIZERS — عدّلها حسب شكل الباك
+// ================================================================
+
+const STAT_COLORS = {
+  revenue: '#10b981',
+  orders: '#8b5cf6',
+  sessions: '#f59e0b',
+  customers: '#3b82f6',
+};
+
+function normalizeStats(raw) {
+  // لو الباك رجّع array جاهزة
+  if (Array.isArray(raw) && raw.length) {
+    return raw.map((s, i) => ({
+      label: s.label || s.name || '',
+      value: String(s.value ?? 0),
+      diff: s.diff || s.change || '—',
+      color: s.color || Object.values(STAT_COLORS)[i % 4],
+      icon: s.icon || ['revenue','orders','sessions','customers'][i % 4],
+      bg: s.bg || 'rgba(99,102,241,0.1)',
+    }));
+  }
+  // لو الباك رجّع object
+  if (raw && typeof raw === 'object') {
+    return [
+      { label: 'Total Revenue', value: String(raw.totalRevenue ?? raw.revenue ?? 0), diff: raw.revenueDiff ?? '—', color: STAT_COLORS.revenue, icon: 'revenue', bg: 'rgba(16,185,129,0.1)' },
+      { label: 'Total Orders', value: String(raw.totalOrders ?? raw.orders ?? 0), diff: raw.ordersDiff ?? '—', color: STAT_COLORS.orders, icon: 'orders', bg: 'rgba(139,92,246,0.1)' },
+      { label: 'Active Sessions', value: String(raw.activeSessions ?? raw.sessions ?? 0), diff: raw.sessionsDiff ?? '—', color: STAT_COLORS.sessions, icon: 'sessions', bg: 'rgba(245,158,11,0.1)' },
+      { label: 'Total Customers', value: String(raw.totalCustomers ?? raw.customers ?? 0), diff: raw.customersDiff ?? '—', color: STAT_COLORS.customers, icon: 'customers', bg: 'rgba(59,130,246,0.1)' },
+    ];
+  }
+  return [];
+}
+
+function normalizeRevenue(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(r => ({
+    day: r.day || r.date || r.label || '',
+    rev: Number(r.rev ?? r.revenue ?? r.value ?? 0),
+  }));
+}
+
+function normalizePie(raw) {
+  if (!Array.isArray(raw)) return [];
+  const colors = ['#10b981', '#6366f1', '#3b82f6'];
+  return raw.map((p, i) => ({
+    name: p.name || p.label || '',
+    value: Number(p.value ?? p.amount ?? 0),
+    color: p.color || colors[i % colors.length],
+  }));
+}
+
+function normalizeTopProducts(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(p => ({
+    label: p.label || p.name || '',
+    val: Number(p.val ?? p.count ?? p.quantity ?? 0),
+    max: Number(p.max ?? p.total ?? 50),
+    emoji: p.emoji || '📦',
+    color: p.color || '#6366f1',
+  }));
+}
+
+function normalizeRoom(r) {
+  const occupied = String(r.status || '').toLowerCase() === 'occupied' || r.status === 'active';
+  return {
+    id: r.id ?? r.roomId,
+    status: occupied ? 'Occupied' : 'Available',
+    user: r.user || r.customerName || '-',
+    time: r.time || r.elapsed || '-',
+    price: r.price ? `${r.price} EGP` : '-',
+  };
+}
+
+function normalizeRooms(raw) {
+  return Array.isArray(raw) ? raw.map(normalizeRoom) : [];
+}
+
+function normalizeOrder(o) {
+  const statusMap = {
+    new: { label: 'NEW', color: '#ef4444' },
+    pending: { label: 'NEW', color: '#ef4444' },
+    preparing: { label: 'PREPARING', color: '#f59e0b' },
+    ready: { label: 'READY', color: '#10b981' },
+    delivered: { label: 'DELIVERED', color: '#3b82f6' },
+    paid: { label: 'PAID', color: '#3b82f6' },
+  };
+  const st = String(o.status || 'new').toLowerCase();
+  const meta = statusMap[st] || statusMap.new;
+  return {
+    id: o.id,
+    room: o.room ?? o.roomId ?? o.roomNumber ?? '?',
+    items: o.items ? (Array.isArray(o.items) ? o.items.map(i => `${i.qty || i.quantity || 1} x ${i.name || i.productName || ''}`).join(', ') : String(o.items)) : '',
+    time: o.time || o.createdAt || '',
+    status: meta.label,
+    color: meta.color,
+    emoji: o.emoji || '🍽️',
+    amount: o.amount || o.total || 0,
+  };
+}
+
+function normalizeOrders(raw) {
+  return Array.isArray(raw) ? raw.map(normalizeOrder) : [];
+}
+
+function normalizeSessions(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(s => ({
+    room: s.room ?? s.roomId ?? s.roomNumber ?? '?',
+    started: s.started || s.startTime || '',
+    duration: s.duration || s.elapsed || '',
+  }));
+}
+
+function normalizeCustomers(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(c => ({
+    name: c.name || '',
+    email: c.email || '',
+    phone: c.phone || '',
+    spent: c.spent ?? c.totalSpent ?? 0,
+  }));
+}
+
+function normalizeProducts(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(p => ({
+    name: p.name,
+    price: p.price,
+    stock: p.stock ?? 0,
+  }));
+}
+
+function normalizeStaff(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(s => ({
+    name: s.name || '',
+    role: s.role || 'Staff',
+    initial: s.initial || (s.name ? s.name.charAt(0).toUpperCase() : '?'),
+  }));
+}
+
+function normalizeCategories(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(c => (typeof c === 'string' ? c : c.name || ''));
+}
+
+function normalizeSettings(raw) {
+  if (!raw) return null;
+  return {
+    branchName: raw.branchName || raw.name || '—',
+    hourlyRate: raw.hourlyRate ? `${raw.hourlyRate} EGP / hour` : '—',
+    taxRate: raw.taxRate ? `${raw.taxRate}%` : '—',
+  };
+}
 
 export default CyberCafeDashboard;

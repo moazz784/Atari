@@ -1,112 +1,256 @@
 import React, { useState, useEffect } from "react";
 import { 
   Play, Square, Monitor, Package, LayoutDashboard, 
-  Plus, Minus, Check, X, Receipt, ShoppingCart, Clock, History, ChevronDown
+  Plus, Minus, Check, X, Receipt, ShoppingCart, Clock, History, ChevronDown,
+  LogOut
 } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { 
+  api, toStaffRoom, connectOrdersHub, getToken, getUser 
+} from "../api";
 
 // تعريف الأسعار هنا لسهولة التعديل
 const RATES = {
-  single: 20, // سعر السنجل
-  multi: 40   // سعر المالتي
+  single: 20,
+  multi: 40
 };
 
+// الـ branchId بيتجاب من اليوزر بعد الـ login، ولو مش موجود نستخدم 1
+const FALLBACK_BRANCH_ID = 1;
+
 export default function CyberProSystem() {
+  const navigate = useNavigate();
+  const user = getUser();
+  const BRANCH_ID = user?.branchId ?? FALLBACK_BRANCH_ID;
+
   const [view, setView] = useState("dashboard");
   const [showAddRoomModal, setShowAddRoomModal] = useState(false);
   const [newRoomName, setNewRoomName] = useState("");
-  const [activeDropdown, setActiveDropdown] = useState(null); // للتحكم في قائمة اختيار النوع
+  const [activeDropdown, setActiveDropdown] = useState(null);
 
-  // حالة الغرف مع إضافة خاصية النوع المختار والسعر
-  const [rooms, setRooms] = useState([
-    { id: 1, name: "ROOM 1", status: "idle", startTime: null, elapsed: 0, roomOrders: [], isCheckingOut: false, selectedMode: 'single', currentRate: RATES.single },
-    { id: 2, name: "ROOM 2", status: "idle", startTime: null, elapsed: 0, roomOrders: [], isCheckingOut: false, selectedMode: 'single', currentRate: RATES.single },
-    { id: 3, name: "ROOM 3", status: "idle", startTime: null, elapsed: 0, roomOrders: [], isCheckingOut: false, selectedMode: 'single', currentRate: RATES.single },
-  ]);
-
-  const [pendingOrders, setPendingOrders] = useState([
-    { id: 101, roomName: "ROOM 2", itemName: "بيبسي", price: 18, time: "10:30 PM" },
-    { id: 102, roomName: "ROOM 1", itemName: "قهوة سادة", price: 20, time: "10:35 PM" },
-  ]);
-
-  const [inventory, setInventory] = useState([
-    { id: 1, name: "قهوة سادة", price: 20, stock: 50 },
-    { id: 2, name: "ريد بُل", price: 35, stock: 4 },
-    { id: 3, name: "بيبسي", price: 18, stock: 24 },
-  ]);
-
-  const [totalRevenue, setTotalRevenue] = useState(1250);
+  const [rooms, setRooms] = useState([]);
+  const [pendingOrders, setPendingOrders] = useState([]);
+  const [inventory, setInventory] = useState([]);
+  const [totalRevenue, setTotalRevenue] = useState(0);
   const [revenueHistory, setRevenueHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
+  // ===== 1. تحميل البيانات الأولية من الـ API =====
+  useEffect(() => {
+    let cancelled = false;
+
+    async function boot() {
+      try {
+        const [roomsData, pending, products, txs] = await Promise.all([
+          api.rooms(BRANCH_ID),
+          api.pendingOrders(BRANCH_ID).catch(() => []),
+          api.products(BRANCH_ID).catch(() => []),
+          api.transactions(BRANCH_ID).catch(() => []),
+        ]);
+
+        if (cancelled) return;
+
+        setRooms((roomsData || []).map(toStaffRoom));
+        setPendingOrders(normalizePending(pending));
+        setInventory(normalizeProducts(products));
+        const history = normalizeTransactions(txs);
+        setRevenueHistory(history);
+        setTotalRevenue(history.reduce((sum, t) => sum + (t.amount || 0), 0));
+        setLoading(false);
+      } catch (err) {
+        if (!cancelled) {
+          setError(err.message || "فشل تحميل البيانات");
+          setLoading(false);
+        }
+      }
+    }
+
+    boot();
+    return () => { cancelled = true; };
+  }, [BRANCH_ID]);
+
+  // ===== 2. SignalR للتحديثات اللحظية =====
+  useEffect(() => {
+    if (!getToken()) return;
+    let conn;
+
+    connectOrdersHub({
+      onOrderCreated: (payload) => {
+        const order = payload?.staffPending || payload?.admin;
+        if (order) setPendingOrders(prev => [normalizePendingOrder(order), ...prev]);
+      },
+      onOrderUpdated: (order) => {
+        setPendingOrders(prev => prev.filter(o => o.id !== order.id));
+      },
+      onRoomUpdated: (room) => {
+        setRooms(prev => {
+          const mapped = toStaffRoom(room);
+          const exists = prev.find(r => r.id === mapped.id);
+          return exists
+            ? prev.map(r => r.id === mapped.id ? { ...mapped, elapsed: r.elapsed, isCheckingOut: r.isCheckingOut } : r)
+            : [...prev, mapped];
+        });
+      },
+      onSessionEnded: ({ roomId }) => {
+        setRooms(prev => prev.map(r => 
+          r.id === roomId 
+            ? { ...r, status: "idle", startTime: null, elapsed: 0, roomOrders: [], isCheckingOut: false, selectedMode: 'single', currentRate: RATES.single }
+            : r
+        ));
+      },
+    }).then(c => { conn = c; }).catch(console.error);
+
+    return () => { conn?.stop(); };
+  }, []);
+
+  // ===== 3. Timer للـ countdown =====
   useEffect(() => {
     const timer = setInterval(() => {
-      setRooms(prev => prev.map(r => 
-        r.status === "active" && !r.isCheckingOut
-          ? { ...r, elapsed: Math.floor((Date.now() - r.startTime) / 1000) } 
-          : r
-      ));
+      setRooms(prev => prev.map(r => {
+        if (r.status !== "active" || r.isCheckingOut) return r;
+        let start = r.startTime;
+        if (typeof start === "string") start = new Date(start).getTime();
+        if (!start) return r;
+        return { ...r, elapsed: Math.floor((Date.now() - start) / 1000) };
+      }));
     }, 1000);
     return () => clearInterval(timer);
   }, []);
 
-  // إغلاق القائمة المنسدلة عند الضغط في أي مكان
+  // إغلاق القائمة المنسدلة
   useEffect(() => {
     const closeDropdown = () => setActiveDropdown(null);
     window.addEventListener('click', closeDropdown);
     return () => window.removeEventListener('click', closeDropdown);
   }, []);
 
-  const addNewRoom = () => {
+  // ===== 4. إضافة غرفة جديدة =====
+  const addNewRoom = async () => {
     if (newRoomName.trim() === "") return;
-    const newRoom = {
-      id: Date.now(),
-      name: newRoomName.toUpperCase(),
-      status: "idle",
-      startTime: null,
-      elapsed: 0,
-      roomOrders: [],
-      isCheckingOut: false,
-      selectedMode: 'single',
-      currentRate: RATES.single
-    };
-    setRooms([...rooms, newRoom]);
-    setNewRoomName("");
-    setShowAddRoomModal(false);
+    try {
+      const created = await api.createRoom(newRoomName.toUpperCase(), BRANCH_ID);
+      setRooms(prev => [...prev, toStaffRoom(created)]);
+      setNewRoomName("");
+      setShowAddRoomModal(false);
+    } catch (err) {
+      alert(err.message);
+    }
   };
 
-  const startRoom = (id) => {
-    setRooms(rooms.map(r => 
-      r.id === id ? { ...r, status: "active", startTime: Date.now(), elapsed: 0, roomOrders: [], isCheckingOut: false } : r
-    ));
+  // ===== 5. بدء الغرفة =====
+  const startRoom = async (id, mode = "single") => {
+    try {
+      const updated = await api.startRoom(id, mode);
+      setRooms(prev => prev.map(r => 
+        r.id === id ? toStaffRoom(updated) : r
+      ));
+    } catch (err) {
+      alert(err.message);
+    }
   };
 
-  // وظيفة تغيير النوع (سنجل/مالتي) قبل البدء
+  // ===== 6. تغيير النوع =====
   const changeMode = (id, mode) => {
-    setRooms(rooms.map(r => 
+    setRooms(prev => prev.map(r => 
       r.id === id ? { ...r, selectedMode: mode, currentRate: RATES[mode] } : r
     ));
     setActiveDropdown(null);
   };
 
-  const confirmPayment = (id, finalAmount) => {
-    const room = rooms.find(r => r.id === id);
-    const newTransaction = {
-      id: Date.now(),
-      roomName: room.name,
-      amount: finalAmount,
-      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-    };
-    setRevenueHistory([newTransaction, ...revenueHistory]);
-    setTotalRevenue(prev => prev + finalAmount);
-    setRooms(rooms.map(r => 
-      r.id === id ? { ...r, status: "idle", startTime: null, elapsed: 0, roomOrders: [], isCheckingOut: false, selectedMode: 'single', currentRate: RATES.single } : r
-    ));
+  // ===== 7. فتح الفاتورة (checkout) =====
+  const openCheckout = async (id) => {
+    try {
+      await api.checkoutRoom(id);
+      setRooms(prev => prev.map(r => 
+        r.id === id ? { ...r, isCheckingOut: true } : r
+      ));
+    } catch (err) {
+      alert(err.message);
+    }
   };
 
-  const acceptOrder = (orderId) => {
+  // ===== 8. تأكيد الدفع =====
+  const confirmPayment = async (id, finalAmount) => {
+    const room = rooms.find(r => r.id === id);
+    try {
+      await api.payRoom(id, finalAmount, "Cash");
+
+      const newTransaction = {
+        id: Date.now(),
+        roomName: room.name,
+        amount: finalAmount,
+        time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+      };
+      setRevenueHistory(prev => [newTransaction, ...prev]);
+      setTotalRevenue(prev => prev + finalAmount);
+      setRooms(prev => prev.map(r => 
+        r.id === id 
+          ? { ...r, status: "idle", startTime: null, elapsed: 0, roomOrders: [], isCheckingOut: false, selectedMode: 'single', currentRate: RATES.single } 
+          : r
+      ));
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  // ===== 9. قبول طلب =====
+  const acceptOrder = async (orderId) => {
     const order = pendingOrders.find(o => o.id === orderId);
-    setRooms(rooms.map(r => r.name === order.roomName ? { ...r, roomOrders: [...r.roomOrders, { name: order.itemName, price: order.price }] } : r));
-    setInventory(inventory.map(item => item.name === order.itemName ? { ...item, stock: Math.max(0, item.stock - 1) } : item));
-    setPendingOrders(pendingOrders.filter(o => o.id !== orderId));
+    if (!order) return;
+    try {
+      await api.acceptOrder(orderId);
+
+      setRooms(prev => prev.map(r => 
+        r.name === order.roomName 
+          ? { ...r, roomOrders: [...r.roomOrders, { name: order.itemName, price: order.price }] } 
+          : r
+      ));
+      setInventory(prev => prev.map(item => 
+        item.name === order.itemName ? { ...item, stock: Math.max(0, item.stock - 1) } : item
+      ));
+      setPendingOrders(prev => prev.filter(o => o.id !== orderId));
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  // ===== 10. رفض طلب =====
+  const rejectOrder = async (orderId) => {
+    try {
+      await api.rejectOrder(orderId);
+      setPendingOrders(prev => prev.filter(o => o.id !== orderId));
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  // ===== 11. تعديل المخزن =====
+  const updateStock = async (productId, delta) => {
+    const item = inventory.find(i => i.id === productId);
+    if (!item) return;
+    const newStock = Math.max(0, item.stock + delta);
+
+    // Optimistic update
+    setInventory(prev => prev.map(i => 
+      i.id === productId ? { ...i, stock: newStock } : i
+    ));
+
+    try {
+      await api.patchStock(productId, { stock: newStock });
+    } catch (err) {
+      // رجّع القيمة القديمة
+      setInventory(prev => prev.map(i => 
+        i.id === productId ? { ...i, stock: item.stock } : i
+      ));
+      alert(err.message);
+    }
+  };
+
+  // ===== Logout =====
+  const handleLogout = () => {
+    api.logout();
+    navigate("/login");
   };
 
   const formatTime = (s) => {
@@ -116,10 +260,34 @@ export default function CyberProSystem() {
     return `${h}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
   };
 
+  // ===== شاشات التحميل والخطأ =====
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#020617] flex items-center justify-center" dir="rtl">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-gray-500 font-bold text-sm">جاري تحميل البيانات...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-[#020617] flex items-center justify-center p-6" dir="rtl">
+        <div className="bg-[#0f172a] border border-red-500/20 rounded-[2.5rem] p-8 max-w-md text-center">
+          <div className="text-red-500 text-5xl mb-4">⚠️</div>
+          <h2 className="text-white font-black text-lg mb-2">تعذّر تحميل البيانات</h2>
+          <p className="text-gray-500 text-sm">{error}</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#020617] text-gray-300 flex flex-col md:flex-row font-sans" dir="rtl">
       
-      {/* Sidebar - الجزء اليمين (لم يتم لمسه) */}
+      {/* Sidebar */}
       <aside className="w-full md:w-72 bg-[#0c0f17] border-l border-white/5 p-6 flex flex-col gap-4 text-right">
         <div className="flex items-center gap-3 mb-10 px-2">
           <div className="bg-blue-600 p-2.5 rounded-2xl shadow-lg shadow-blue-900/20">
@@ -140,6 +308,14 @@ export default function CyberProSystem() {
           إضافة غرفة جديدة
         </button>
 
+        <button
+          onClick={handleLogout}
+          className="flex items-center justify-center gap-3 w-full py-4 bg-red-600/10 text-red-500 border border-red-500/20 rounded-[1.5rem] font-black hover:bg-red-600 hover:text-white transition-all"
+        >
+          <LogOut size={20} />
+          تسجيل الخروج
+        </button>
+
         <div className="mt-auto bg-gradient-to-br from-blue-600/20 to-transparent p-5 rounded-[2rem] border border-blue-500/20">
           <p className="text-[11px] text-blue-400 font-black uppercase mb-1">دخل وردية اليوم</p>
           <p className="text-2xl font-black text-white">{totalRevenue} <span className="text-xs text-blue-500">EGP</span></p>
@@ -156,6 +332,7 @@ export default function CyberProSystem() {
               <input 
                 autoFocus type="text" placeholder="اسم الغرفة" value={newRoomName}
                 onChange={(e) => setNewRoomName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addNewRoom()}
                 className="w-full bg-black/40 border border-white/10 p-4 rounded-2xl text-white mb-6 focus:border-blue-600 outline-none"
               />
               <div className="flex gap-3">
@@ -166,7 +343,7 @@ export default function CyberProSystem() {
           </div>
         )}
 
-        {/* شاشة الأجهزة (التعديل هنا) */}
+        {/* شاشة الأجهزة */}
         {view === "dashboard" && (
           <div className="animate-in fade-in duration-500">
             <header className="mb-10 text-right">
@@ -176,8 +353,9 @@ export default function CyberProSystem() {
             
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 text-right">
               {rooms.map(room => {
-                const timeCost = Math.ceil((room.elapsed / 3600) * room.currentRate);
-                const ordersCost = room.roomOrders.reduce((sum, item) => sum + item.price, 0);
+                const rate = room.currentRate || RATES[room.selectedMode] || RATES.single;
+                const timeCost = Math.ceil((room.elapsed / 3600) * rate);
+                const ordersCost = (room.roomOrders || []).reduce((sum, item) => sum + (item.price || 0), 0);
                 const totalCost = timeCost + ordersCost;
 
                 return (
@@ -187,7 +365,7 @@ export default function CyberProSystem() {
                       <div className="space-y-6 animate-in zoom-in-95">
                         <div className="flex justify-between items-center border-b border-white/5 pb-4">
                           <h4 className="text-blue-400 font-black flex items-center gap-2"><Receipt size={20}/> الفاتورة</h4>
-                          <X className="cursor-pointer text-gray-600" onClick={() => setRooms(rooms.map(r => r.id === room.id ? {...r, isCheckingOut: false} : r))} />
+                          <X className="cursor-pointer text-gray-600" onClick={() => setRooms(prev => prev.map(r => r.id === room.id ? {...r, isCheckingOut: false} : r))} />
                         </div>
                         <div className="space-y-3">
                           <div className="flex justify-between text-xs text-gray-400"><span>النوع المستهلك:</span><span>{room.selectedMode === 'multi' ? 'مالتي' : 'سنجل'}</span></div>
@@ -202,7 +380,6 @@ export default function CyberProSystem() {
                         <div className="flex justify-between items-start mb-8">
                           <div>
                             <h3 className="text-2xl font-black text-white">{room.name}</h3>
-                            {/* إظهار النوع المختار في البوكس الكبير */}
                             <p className={`text-[11px] font-black uppercase mt-1 px-3 py-1 rounded-full w-fit ${room.status === 'active' ? 'bg-blue-600/20 text-blue-400' : 'bg-gray-800 text-gray-500'}`}>
                               {room.selectedMode === 'multi' ? 'وضع مالتي (40)' : 'وضع سنجل (20)'}
                             </p>
@@ -218,14 +395,13 @@ export default function CyberProSystem() {
 
                         {room.status === 'active' ? (
                           <button 
-                            onClick={() => setRooms(rooms.map(r => r.id === room.id ? {...r, isCheckingOut: true} : r))}
+                            onClick={() => openCheckout(room.id)}
                             className="w-full py-5 rounded-[1.5rem] font-black text-sm flex items-center justify-center gap-3 bg-white/5 text-white hover:bg-red-600 transition-all"
                           >
                             <Square size={18} fill="currentColor"/> إنهاء الوقت
                           </button>
                         ) : (
                           <div className="flex gap-2">
-                            {/* زر اختيار النوع */}
                             <div className="relative">
                               <button 
                                 onClick={(e) => { e.stopPropagation(); setActiveDropdown(activeDropdown === room.id ? null : room.id); }}
@@ -246,9 +422,8 @@ export default function CyberProSystem() {
                               )}
                             </div>
 
-                            {/* زر البدء الأساسي */}
                             <button 
-                              onClick={() => startRoom(room.id)}
+                              onClick={() => startRoom(room.id, room.selectedMode)}
                               className={`flex-1 py-5 rounded-[1.5rem] font-black text-sm flex items-center justify-center gap-3 transition-all shadow-xl active:scale-95 text-white ${room.selectedMode === 'multi' ? 'bg-purple-600 shadow-purple-900/30' : 'bg-blue-600 shadow-blue-900/30'}`}
                             >
                               <Play size={18} fill="currentColor"/> Start
@@ -264,7 +439,7 @@ export default function CyberProSystem() {
           </div>
         )}
 
-        {/* شاشات الطلبات والمخزن والسجل (لم يتم لمسها) */}
+        {/* سجل الإيرادات */}
         {view === "history" && (
           <div className="max-w-4xl mx-auto animate-in fade-in duration-500 text-right">
             <header className="mb-10">
@@ -288,17 +463,20 @@ export default function CyberProSystem() {
           </div>
         )}
 
+        {/* الطلبات المعلقة */}
         {view === "orders" && (
           <div className="max-w-4xl mx-auto animate-in duration-500 text-right text-white font-black">
             <h1 className="text-3xl mb-10">الطلبات المعلقة</h1>
-            {pendingOrders.map(order => (
+            {pendingOrders.length === 0 ? (
+              <div className="text-center text-gray-600 p-10 font-bold">لا توجد طلبات حالياً</div>
+            ) : pendingOrders.map(order => (
               <div key={order.id} className="bg-[#0c0f17] p-6 rounded-[2rem] border border-white/5 flex items-center justify-between mb-4">
                 <div className="flex items-center gap-6">
                   <div className="bg-blue-600/10 text-blue-500 p-4 rounded-2xl">{order.roomName}</div>
                   <div><h4>{order.itemName}</h4><p className="text-sm text-gray-500">{order.price} EGP</p></div>
                 </div>
                 <div className="flex gap-2">
-                  <button onClick={() => setPendingOrders(prev => prev.filter(o => o.id !== order.id))} className="p-4 bg-red-600/10 text-red-500 rounded-2xl"><X/></button>
+                  <button onClick={() => rejectOrder(order.id)} className="p-4 bg-red-600/10 text-red-500 rounded-2xl"><X/></button>
                   <button onClick={() => acceptOrder(order.id)} className="p-4 bg-green-600 text-white rounded-2xl flex gap-2"><Check/> قبول</button>
                 </div>
               </div>
@@ -306,6 +484,7 @@ export default function CyberProSystem() {
           </div>
         )}
 
+        {/* المخزن */}
         {view === "inventory" && (
           <div className="max-w-4xl mx-auto animate-in duration-500 text-right">
             <h1 className="text-3xl text-white font-black mb-10">المخزن</h1>
@@ -315,8 +494,8 @@ export default function CyberProSystem() {
                 <div className="flex items-center gap-6">
                   <span className="text-white font-black text-xl">{item.stock}</span>
                   <div className="flex gap-2">
-                    <button onClick={() => setInventory(inventory.map(i => i.id === item.id ? {...i, stock: Math.max(0, i.stock-1)} : i))} className="p-2 bg-white/5 rounded-lg text-gray-400"><Minus size={16}/></button>
-                    <button onClick={() => setInventory(inventory.map(i => i.id === item.id ? {...i, stock: i.stock+1} : i))} className="p-2 bg-white/5 rounded-lg text-gray-400"><Plus size={16}/></button>
+                    <button onClick={() => updateStock(item.id, -1)} className="p-2 bg-white/5 rounded-lg text-gray-400"><Minus size={16}/></button>
+                    <button onClick={() => updateStock(item.id, +1)} className="p-2 bg-white/5 rounded-lg text-gray-400"><Plus size={16}/></button>
                   </div>
                 </div>
               </div>
@@ -326,6 +505,40 @@ export default function CyberProSystem() {
       </main>
     </div>
   );
+}
+
+// ===== Normalizers =====
+function normalizePending(list = []) {
+  return (list || []).map(normalizePendingOrder);
+}
+
+function normalizePendingOrder(o) {
+  if (!o) return { id: 0, roomName: "—", itemName: "—", price: 0, time: "" };
+  return {
+    id: o.id,
+    roomName: o.roomName || o.room?.name || "—",
+    itemName: o.itemName || o.productName || o.items?.[0]?.name || "—",
+    price: o.price || o.total || o.items?.[0]?.price || 0,
+    time: o.time || o.createdAt || "",
+  };
+}
+
+function normalizeProducts(list = []) {
+  return (list || []).map(p => ({
+    id: p.id,
+    name: p.name,
+    price: p.price,
+    stock: p.stock ?? 0,
+  }));
+}
+
+function normalizeTransactions(list = []) {
+  return (list || []).map(t => ({
+    id: t.id,
+    roomName: t.roomName || t.room?.name || "—",
+    amount: t.amount || t.total || 0,
+    time: t.time || t.createdAt || "",
+  }));
 }
 
 // مكون زر القائمة الجانبية
