@@ -57,18 +57,31 @@ export function guestTokenFromUrl(search = window.location.search) {
   return new URLSearchParams(search).get("token");
 }
 
-async function request(path, { method = "GET", body, auth = true, headers } = {}) {
+async function request(path, { method = "GET", body, auth = true, headers, timeoutMs = 20000 } = {}) {
   const token = getToken();
-  const res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers: {
-      Accept: "application/json",
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-      ...(auth && token ? { Authorization: `Bearer ${token}` } : {}),
-      ...headers,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method,
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json",
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+        ...(auth && token ? { Authorization: `Bearer ${token}` } : {}),
+        ...headers,
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      throw new ApiError(408, { error: "Request timed out" });
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (res.status === 204) return null;
 
@@ -232,6 +245,7 @@ export const api = {
 
   staff: () => request("/api/staff"),
   createStaff: (body) => request("/api/staff", { method: "POST", body }),
+  register: (body) => request("/api/auth/register", { method: "POST", body }),
   updateStaff: (id, body) => request(`/api/staff/${id}`, { method: "PUT", body }),
   deleteStaff: (id) => request(`/api/staff/${id}`, { method: "DELETE" }),
 

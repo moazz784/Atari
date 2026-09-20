@@ -37,6 +37,10 @@ const CyberCafeDashboard = () => {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [reloadToken, setReloadToken] = useState(0);
+  const [toast, setToast] = useState("");
+  const [modal, setModal] = useState(null);
+  const [busy, setBusy] = useState(false);
   const hubRef = useRef(null);
 
   // ===== Responsive detection =====
@@ -121,7 +125,7 @@ const CyberCafeDashboard = () => {
     });
 
     return () => { cancelled = true; };
-  }, [selectedBranch]);
+  }, [selectedBranch, reloadToken]);
 
   // ===== SignalR للتحديثات اللحظية =====
   useEffect(() => {
@@ -156,7 +160,109 @@ const CyberCafeDashboard = () => {
     return () => { conn?.stop(); hubRef.current = null; };
   }, []);
 
-  // ===== renderContent =====
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(""), 4000);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  const refreshAll = () => {
+    if (selectedBranch == null) return;
+    setReloadToken((n) => n + 1);
+  };
+
+  const showError = (err) => {
+    const msg = err?.message || "حدث خطأ";
+    setToast(msg);
+    window.alert(msg);
+  };
+
+  const run = async (fn) => {
+    try {
+      setBusy(true);
+      await fn();
+      setModal(null);
+      setToast("تم الحفظ");
+      refreshAll();
+    } catch (err) {
+      showError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitModal = (form) => {
+    if (!modal) return;
+    switch (modal.kind) {
+      case "room-add":
+        return run(() => api.createRoom(form.name, selectedBranch));
+      case "room-edit":
+        return run(() => api.updateRoom(modal.record.id, { name: form.name }));
+      case "customer-add":
+        return run(() => api.createCustomer({
+          name: form.name,
+          email: form.email || null,
+          phone: form.phone || null,
+          branchId: selectedBranch,
+        }));
+      case "customer-edit":
+        return run(() => api.updateCustomer(modal.record.id, {
+          name: form.name,
+          email: form.email || null,
+          phone: form.phone || null,
+          branchId: selectedBranch,
+        }));
+      case "product-add":
+        return run(() => api.createProduct({
+          name: form.name,
+          price: Number(form.price),
+          stock: Number(form.stock || 0),
+          categoryId: form.categoryId ? Number(form.categoryId) : null,
+          branchId: selectedBranch,
+        }));
+      case "product-edit":
+        return run(() => api.updateProduct(modal.record.id, {
+          name: form.name,
+          price: Number(form.price),
+          stock: Number(form.stock || 0),
+          categoryId: form.categoryId ? Number(form.categoryId) : modal.record.categoryId,
+          branchId: selectedBranch,
+        }));
+      case "staff-add":
+        return run(() => api.createStaff({
+          name: form.name,
+          email: form.email,
+          password: form.password,
+          role: form.role || "Staff",
+          branchId: selectedBranch,
+        }));
+      case "staff-edit":
+        return run(() => api.updateStaff(modal.record.id, {
+          name: form.name,
+          role: form.role || "Staff",
+          branchId: selectedBranch,
+        }));
+      case "category-add":
+        return run(() => api.createCategory(form.name, selectedBranch));
+      case "settings": {
+        const taxInput = Number(form.taxPercent);
+        const taxRate = taxInput > 1 ? taxInput / 100 : taxInput;
+        return run(() => api.updateSettings(selectedBranch, {
+          branchName: form.branchName,
+          singleHourlyRate: Number(form.singleHourlyRate),
+          multiHourlyRate: Number(form.multiHourlyRate),
+          taxRate,
+        }));
+      }
+      case "order-status":
+        return run(() => api.patchOrderStatus(modal.record.id, form.status));
+      default:
+        return null;
+    }
+  };
+
+  const modalConfig = modal ? getModalConfig(modal, categories, settings) : null;
+
   const renderContent = () => {
     switch (activeView) {
       case 'dashboard':
@@ -171,32 +277,94 @@ const CyberCafeDashboard = () => {
           />
         );
       case 'rooms':
-        return <RoomsContent rooms={rooms} onRefresh={() => refreshAll()} />;
+        return (
+          <RoomsContent
+            rooms={rooms}
+            onAdd={() => setModal({ kind: "room-add" })}
+            onEdit={(room) => setModal({ kind: "room-edit", record: room })}
+            onDelete={(room) => {
+              if (!window.confirm(`Delete ${room.name || `Room ${room.id}`}?`)) return;
+              run(() => api.deleteRoom(room.id));
+            }}
+          />
+        );
       case 'orders':
-        return <OrdersContent orders={orders} />;
+        return (
+          <OrdersContent
+            orders={orders}
+            onStatus={(order) => setModal({ kind: "order-status", record: order })}
+          />
+        );
       case 'sessions':
-        return <SessionsContent sessions={sessions} />;
+        return (
+          <SessionsContent
+            sessions={sessions}
+            onEnd={(session) => {
+              if (!session.id) return;
+              if (!window.confirm(`End session in Room ${session.roomName || session.room}?`)) return;
+              run(() => api.endSession(session.id));
+            }}
+          />
+        );
       case 'customers':
-        return <CustomersContent customers={customers} />;
+        return (
+          <CustomersContent
+            customers={customers}
+            onAdd={() => setModal({ kind: "customer-add" })}
+            onEdit={(customer) => setModal({ kind: "customer-edit", record: customer })}
+            onDelete={(customer) => {
+              if (!window.confirm(`Delete ${customer.name}?`)) return;
+              run(() => api.deleteCustomer(customer.id));
+            }}
+          />
+        );
       case 'products':
-        return <ProductsContent products={products} />;
+        return (
+          <ProductsContent
+            products={products}
+            onAdd={() => setModal({ kind: "product-add" })}
+            onEdit={(product) => setModal({ kind: "product-edit", record: product })}
+            onDelete={(product) => {
+              if (!window.confirm(`Delete ${product.name}?`)) return;
+              run(() => api.deleteProduct(product.id));
+            }}
+          />
+        );
       case 'reports':
         return <ReportsContent revenueData={revenueData} pieData={pieData} topProducts={topProducts} />;
       case 'staff':
-        return <StaffContent staff={staff} />;
+        return (
+          <StaffContent
+            staff={staff}
+            onAdd={() => setModal({ kind: "staff-add" })}
+            onEdit={(member) => setModal({ kind: "staff-edit", record: member })}
+            onDelete={(member) => {
+              if (!window.confirm(`Delete ${member.name}?`)) return;
+              run(() => api.deleteStaff(member.id));
+            }}
+          />
+        );
       case 'categories':
-        return <CategoriesContent categories={categories} />;
+        return (
+          <CategoriesContent
+            categories={categories}
+            onAdd={() => setModal({ kind: "category-add" })}
+            onDelete={(cat) => {
+              if (!window.confirm(`Delete ${cat.name}?`)) return;
+              run(() => api.deleteCategory(cat.id));
+            }}
+          />
+        );
       case 'settings':
-        return <SettingsContent settings={settings} />;
+        return (
+          <SettingsContent
+            settings={settings}
+            onEdit={() => setModal({ kind: "settings" })}
+          />
+        );
       default:
         return null;
     }
-  };
-
-  // ===== refresh =====
-  const refreshAll = () => {
-    if (selectedBranch == null) return;
-    setSelectedBranch(prev => prev); // trigger effect
   };
 
   // ===== شاشة تحميل =====
@@ -432,6 +600,25 @@ const CyberCafeDashboard = () => {
           
         </div>
       </main>
+
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-[90] bg-[#111622] border border-gray-700 text-white text-sm font-bold px-4 py-3 rounded-xl shadow-2xl max-w-sm">
+          {toast}
+        </div>
+      )}
+
+      {modal && modalConfig && (
+        <FormModal
+          key={`${modal.kind}-${modal.record?.id ?? "new"}`}
+          title={modalConfig.title}
+          fields={modalConfig.fields}
+          initial={modalConfig.initial}
+          busy={busy}
+          submitLabel={modalConfig.submitLabel}
+          onClose={() => !busy && setModal(null)}
+          onSubmit={submitModal}
+        />
+      )}
     </div>
   );
 };
@@ -503,7 +690,7 @@ const DashboardContent = ({ stats, revenueData, pieData, topProducts, rooms, ord
                 <div className={`p-1.5 rounded-lg ${room.status === 'Occupied' ? 'bg-[#ef4444]/10 text-[#ef4444]' : 'bg-[#10b981]/10 text-[#10b981]'}`}>
                   <Activity size={14} />
                 </div>
-                <span className={`text-[11px] font-black uppercase ${room.status === 'Occupied' ? 'text-[#ef4444]' : 'text-[#10b981]'}`}>Room {room.id}</span>
+                <span className={`text-[11px] font-black uppercase ${room.status === 'Occupied' ? 'text-[#ef4444]' : 'text-[#10b981]'}`}>{room.name || `Room ${room.id}`}</span>
               </div>
               <p className="text-[10px] text-gray-600 font-bold uppercase tracking-widest">{room.status}</p>
               <p className="text-xs font-bold text-white mt-1.5 truncate">{room.user}</p>
@@ -614,11 +801,11 @@ const DashboardContent = ({ stats, revenueData, pieData, topProducts, rooms, ord
 );
 
 // ---------------------- ROOMS PAGE ----------------------
-const RoomsContent = ({ rooms }) => (
+const RoomsContent = ({ rooms, onAdd, onEdit, onDelete }) => (
   <div className="bg-[#0c0f17] rounded-[28px] p-5 md:p-7 border border-gray-800/40">
     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
       <h3 className="text-white font-bold text-lg">Manage Rooms</h3>
-      <button className="flex items-center gap-2 bg-[#1e40af] hover:bg-blue-800 text-white text-xs font-bold py-2 px-4 rounded-xl transition-all">
+      <button onClick={onAdd} className="flex items-center gap-2 bg-[#1e40af] hover:bg-blue-800 text-white text-xs font-bold py-2 px-4 rounded-xl transition-all">
         <Plus size={14} /> Add Room
       </button>
     </div>
@@ -637,7 +824,7 @@ const RoomsContent = ({ rooms }) => (
         <tbody>
           {rooms.map(room => (
             <tr key={room.id} className="border-b border-gray-800/50 hover:bg-gray-800/20 transition-colors">
-              <td className="py-3 text-sm font-bold text-white">Room {room.id}</td>
+              <td className="py-3 text-sm font-bold text-white">{room.name || `Room ${room.id}`}</td>
               <td className="py-3">
                 <span className={`text-[10px] font-black px-2 py-1 rounded-full ${room.status === 'Occupied' ? 'bg-red-500/20 text-red-400' : 'bg-green-500/20 text-green-400'}`}>
                   {room.status}
@@ -648,8 +835,8 @@ const RoomsContent = ({ rooms }) => (
               <td className="py-3 text-sm text-[#f59e0b] font-bold">{room.price}</td>
               <td className="py-3">
                 <div className="flex items-center gap-2">
-                  <button className="p-1 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20"><Edit size={14} /></button>
-                  <button className="p-1 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20"><Trash2 size={14} /></button>
+                  <button onClick={() => onEdit(room)} className="p-1 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20"><Edit size={14} /></button>
+                  <button onClick={() => onDelete(room)} className="p-1 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20"><Trash2 size={14} /></button>
                 </div>
               </td>
             </tr>
@@ -661,7 +848,7 @@ const RoomsContent = ({ rooms }) => (
 );
 
 // ---------------------- ORDERS PAGE ----------------------
-const OrdersContent = ({ orders }) => (
+const OrdersContent = ({ orders, onStatus }) => (
   <div className="bg-[#0c0f17] rounded-[28px] p-5 md:p-7 border border-gray-800/40">
     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
       <h3 className="text-white font-bold text-lg">All Orders</h3>
@@ -687,7 +874,7 @@ const OrdersContent = ({ orders }) => (
             <span className="text-[8px] font-black px-2.5 py-1.5 rounded-lg border" style={{ color: order.color, borderColor: `${order.color}30`, backgroundColor: `${order.color}10` }}>
               {order.status}
             </span>
-            <button className="text-blue-400 text-xs font-bold hover:underline">View</button>
+            <button onClick={() => onStatus(order)} className="text-blue-400 text-xs font-bold hover:underline">Update status</button>
           </div>
         </div>
       ))}
@@ -696,22 +883,22 @@ const OrdersContent = ({ orders }) => (
 );
 
 // ---------------------- SESSIONS PAGE ----------------------
-const SessionsContent = ({ sessions }) => (
+const SessionsContent = ({ sessions, onEnd }) => (
   <div className="bg-[#0c0f17] rounded-[28px] p-5 md:p-7 border border-gray-800/40">
     <h3 className="text-white font-bold text-lg mb-6">Active Sessions</h3>
     <div className="grid gap-4">
       {sessions.length === 0 ? (
         <div className="text-center py-10 text-gray-600 font-bold">لا توجد جلسات نشطة</div>
-      ) : sessions.map((session, idx) => (
-        <div key={idx} className="flex flex-wrap items-center justify-between p-4 bg-[#111622] rounded-2xl border border-gray-800/50">
+      ) : sessions.map((session) => (
+        <div key={session.id} className="flex flex-wrap items-center justify-between p-4 bg-[#111622] rounded-2xl border border-gray-800/50">
           <div>
-            <p className="text-white font-bold">Room {session.room}</p>
+            <p className="text-white font-bold">{session.roomName || `Room ${session.room}`}</p>
             <p className="text-[10px] text-gray-500">Started {session.started}</p>
           </div>
           <div className="flex items-center gap-4">
             <Timer size={16} className="text-[#f59e0b]" />
             <span className="text-sm text-white">{session.duration}</span>
-            <button className="bg-red-500/20 text-red-400 text-xs font-bold py-1 px-3 rounded-lg">End Session</button>
+            <button onClick={() => onEnd(session)} className="bg-red-500/20 text-red-400 text-xs font-bold py-1 px-3 rounded-lg">End Session</button>
           </div>
         </div>
       ))}
@@ -720,11 +907,11 @@ const SessionsContent = ({ sessions }) => (
 );
 
 // ---------------------- CUSTOMERS PAGE ----------------------
-const CustomersContent = ({ customers }) => (
+const CustomersContent = ({ customers, onAdd, onEdit, onDelete }) => (
   <div className="bg-[#0c0f17] rounded-[28px] p-5 md:p-7 border border-gray-800/40">
     <div className="flex justify-between items-center mb-6 flex-wrap gap-4">
       <h3 className="text-white font-bold text-lg">Customers List</h3>
-      <button className="flex items-center gap-2 bg-[#1e40af] hover:bg-blue-800 text-white text-xs font-bold py-2 px-4 rounded-xl"><Plus size={14} /> Add Customer</button>
+      <button onClick={onAdd} className="flex items-center gap-2 bg-[#1e40af] hover:bg-blue-800 text-white text-xs font-bold py-2 px-4 rounded-xl"><Plus size={14} /> Add Customer</button>
     </div>
     <div className="overflow-x-auto">
       <table className="w-full text-left">
@@ -734,15 +921,22 @@ const CustomersContent = ({ customers }) => (
             <th className="pb-3 text-[11px] font-bold text-gray-500 uppercase">Email</th>
             <th className="pb-3 text-[11px] font-bold text-gray-500 uppercase">Phone</th>
             <th className="pb-3 text-[11px] font-bold text-gray-500 uppercase">Total Spent</th>
+            <th className="pb-3 text-[11px] font-bold text-gray-500 uppercase">Actions</th>
           </tr>
         </thead>
         <tbody>
-          {customers.map((customer, idx) => (
-            <tr key={idx} className="border-b border-gray-800/50 hover:bg-gray-800/20">
+          {customers.map((customer) => (
+            <tr key={customer.id} className="border-b border-gray-800/50 hover:bg-gray-800/20">
               <td className="py-3 text-sm text-white">{customer.name}</td>
               <td className="py-3 text-sm text-gray-400">{customer.email}</td>
               <td className="py-3 text-sm text-gray-400">{customer.phone}</td>
               <td className="py-3 text-sm text-[#10b981] font-bold">{customer.spent} EGP</td>
+              <td className="py-3">
+                <div className="flex items-center gap-2">
+                  <button onClick={() => onEdit(customer)} className="p-1 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20"><Edit size={14} /></button>
+                  <button onClick={() => onDelete(customer)} className="p-1 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20"><Trash2 size={14} /></button>
+                </div>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -752,23 +946,23 @@ const CustomersContent = ({ customers }) => (
 );
 
 // ---------------------- PRODUCTS PAGE ----------------------
-const ProductsContent = ({ products }) => (
+const ProductsContent = ({ products, onAdd, onEdit, onDelete }) => (
   <div className="bg-[#0c0f17] rounded-[28px] p-5 md:p-7 border border-gray-800/40">
     <div className="flex justify-between items-center mb-6">
       <h3 className="text-white font-bold text-lg">Products Inventory</h3>
-      <button className="flex items-center gap-2 bg-[#1e40af] text-white text-xs font-bold py-2 px-4 rounded-xl"><Plus size={14} /> Add Product</button>
+      <button onClick={onAdd} className="flex items-center gap-2 bg-[#1e40af] text-white text-xs font-bold py-2 px-4 rounded-xl"><Plus size={14} /> Add Product</button>
     </div>
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-      {products.map((prod, idx) => (
-        <div key={idx} className="bg-[#111622] rounded-2xl p-4 border border-gray-800/50 flex justify-between items-center">
+      {products.map((prod) => (
+        <div key={prod.id} className="bg-[#111622] rounded-2xl p-4 border border-gray-800/50 flex justify-between items-center">
           <div>
             <p className="text-white font-bold">{prod.name}</p>
             <p className="text-[10px] text-gray-500">Price: {prod.price} EGP</p>
             <p className="text-[9px] text-gray-600">Stock: {prod.stock}</p>
           </div>
           <div className="flex gap-2">
-            <button className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400"><Edit size={14} /></button>
-            <button className="p-1.5 rounded-lg bg-red-500/10 text-red-400"><Trash2 size={14} /></button>
+            <button onClick={() => onEdit(prod)} className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400"><Edit size={14} /></button>
+            <button onClick={() => onDelete(prod)} className="p-1.5 rounded-lg bg-red-500/10 text-red-400"><Trash2 size={14} /></button>
           </div>
         </div>
       ))}
@@ -819,15 +1013,15 @@ const ReportsContent = ({ revenueData, pieData, topProducts }) => (
 );
 
 // ---------------------- STAFF PAGE ----------------------
-const StaffContent = ({ staff }) => (
+const StaffContent = ({ staff, onAdd, onEdit, onDelete }) => (
   <div className="bg-[#0c0f17] rounded-[28px] p-5 md:p-7 border border-gray-800/40">
     <div className="flex justify-between items-center mb-6">
       <h3 className="text-white font-bold text-lg">Staff Management</h3>
-      <button className="flex items-center gap-2 bg-[#1e40af] text-white text-xs font-bold py-2 px-4 rounded-xl"><Plus size={14} /> Add Staff</button>
+      <button onClick={onAdd} className="flex items-center gap-2 bg-[#1e40af] text-white text-xs font-bold py-2 px-4 rounded-xl"><Plus size={14} /> Add Staff</button>
     </div>
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-      {staff.map((member, idx) => (
-        <div key={idx} className="bg-[#111622] rounded-2xl p-4 border border-gray-800/50 flex justify-between items-center">
+      {staff.map((member) => (
+        <div key={member.id} className="bg-[#111622] rounded-2xl p-4 border border-gray-800/50 flex justify-between items-center">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center text-white font-bold">{member.initial}</div>
             <div>
@@ -836,8 +1030,8 @@ const StaffContent = ({ staff }) => (
             </div>
           </div>
           <div className="flex gap-2">
-            <button className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400"><Edit size={14} /></button>
-            <button className="p-1.5 rounded-lg bg-red-500/10 text-red-400"><Trash2 size={14} /></button>
+            <button onClick={() => onEdit(member)} className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400"><Edit size={14} /></button>
+            <button onClick={() => onDelete(member)} className="p-1.5 rounded-lg bg-red-500/10 text-red-400"><Trash2 size={14} /></button>
           </div>
         </div>
       ))}
@@ -846,17 +1040,17 @@ const StaffContent = ({ staff }) => (
 );
 
 // ---------------------- CATEGORIES PAGE ----------------------
-const CategoriesContent = ({ categories }) => (
+const CategoriesContent = ({ categories, onAdd, onDelete }) => (
   <div className="bg-[#0c0f17] rounded-[28px] p-5 md:p-7 border border-gray-800/40">
     <div className="flex justify-between items-center mb-6">
       <h3 className="text-white font-bold text-lg">Product Categories</h3>
-      <button className="flex items-center gap-2 bg-[#1e40af] text-white text-xs font-bold py-2 px-4 rounded-xl"><Plus size={14} /> Add Category</button>
+      <button onClick={onAdd} className="flex items-center gap-2 bg-[#1e40af] text-white text-xs font-bold py-2 px-4 rounded-xl"><Plus size={14} /> Add Category</button>
     </div>
     <div className="flex flex-wrap gap-3">
-      {categories.map((cat, idx) => (
-        <div key={idx} className="bg-[#111622] rounded-2xl px-4 py-2 border border-gray-800/50 flex items-center gap-3">
-          <span className="text-white font-medium">{cat}</span>
-          <button className="text-gray-500 hover:text-red-400"><Trash2 size={14} /></button>
+      {categories.map((cat) => (
+        <div key={cat.id} className="bg-[#111622] rounded-2xl px-4 py-2 border border-gray-800/50 flex items-center gap-3">
+          <span className="text-white font-medium">{cat.name}</span>
+          <button onClick={() => onDelete(cat)} className="text-gray-500 hover:text-red-400"><Trash2 size={14} /></button>
         </div>
       ))}
     </div>
@@ -864,21 +1058,27 @@ const CategoriesContent = ({ categories }) => (
 );
 
 // ---------------------- SETTINGS PAGE ----------------------
-const SettingsContent = ({ settings }) => (
+const SettingsContent = ({ settings, onEdit }) => (
   <div className="bg-[#0c0f17] rounded-[28px] p-5 md:p-7 border border-gray-800/40">
     <h3 className="text-white font-bold text-lg mb-6">System Settings</h3>
     <div className="space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-[#111622] rounded-2xl">
         <div><p className="text-white font-medium">Branch Name</p><p className="text-[10px] text-gray-500">{settings?.branchName || '—'}</p></div>
-        <button className="text-blue-400 text-xs font-bold">Edit</button>
+        <button onClick={onEdit} className="text-blue-400 text-xs font-bold">Edit</button>
       </div>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-[#111622] rounded-2xl">
-        <div><p className="text-white font-medium">Hourly Rate</p><p className="text-[10px] text-gray-500">{settings?.hourlyRate || '—'}</p></div>
-        <button className="text-blue-400 text-xs font-bold">Edit</button>
+        <div>
+          <p className="text-white font-medium">Hourly Rate</p>
+          <p className="text-[10px] text-gray-500">
+            Single {settings?.hourlyRate || '—'}
+            {settings?.multiHourlyRate != null ? ` • Multi ${settings.multiHourlyRate} EGP / hour` : ''}
+          </p>
+        </div>
+        <button onClick={onEdit} className="text-blue-400 text-xs font-bold">Edit</button>
       </div>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-[#111622] rounded-2xl">
         <div><p className="text-white font-medium">Tax Rate</p><p className="text-[10px] text-gray-500">{settings?.taxRate || '—'}</p></div>
-        <button className="text-blue-400 text-xs font-bold">Edit</button>
+        <button onClick={onEdit} className="text-blue-400 text-xs font-bold">Edit</button>
       </div>
     </div>
   </div>
@@ -1007,10 +1207,11 @@ function normalizeRoom(r) {
   const occupied = String(r.status || '').toLowerCase() === 'occupied' || r.status === 'active';
   return {
     id: r.id ?? r.roomId,
+    name: r.name || `Room ${r.id ?? r.roomId}`,
     status: occupied ? 'Occupied' : 'Available',
     user: r.user || r.customerName || '-',
     time: r.time || r.elapsed || '-',
-    price: r.price ? `${r.price} EGP` : '-',
+    price: r.price ? (String(r.price).includes('EGP') ? r.price : `${r.price} EGP`) : '-',
   };
 }
 
@@ -1048,7 +1249,9 @@ function normalizeOrders(raw) {
 function normalizeSessions(raw) {
   if (!Array.isArray(raw)) return [];
   return raw.map(s => ({
+    id: s.id,
     room: s.room ?? s.roomId ?? s.roomNumber ?? '?',
+    roomName: s.roomName || (s.room != null ? `Room ${s.room}` : ''),
     started: s.started || s.startTime || '',
     duration: s.duration || s.elapsed || '',
   }));
@@ -1057,6 +1260,7 @@ function normalizeSessions(raw) {
 function normalizeCustomers(raw) {
   if (!Array.isArray(raw)) return [];
   return raw.map(c => ({
+    id: c.id,
     name: c.name || '',
     email: c.email || '',
     phone: c.phone || '',
@@ -1067,16 +1271,21 @@ function normalizeCustomers(raw) {
 function normalizeProducts(raw) {
   if (!Array.isArray(raw)) return [];
   return raw.map(p => ({
+    id: p.id,
     name: p.name,
     price: p.price,
     stock: p.stock ?? 0,
+    categoryId: p.categoryId ?? '',
+    category: p.category || '',
   }));
 }
 
 function normalizeStaff(raw) {
   if (!Array.isArray(raw)) return [];
   return raw.map(s => ({
+    id: s.id,
     name: s.name || '',
+    email: s.email || '',
     role: s.role || 'Staff',
     initial: s.initial || (s.name ? s.name.charAt(0).toUpperCase() : '?'),
   }));
@@ -1084,16 +1293,226 @@ function normalizeStaff(raw) {
 
 function normalizeCategories(raw) {
   if (!Array.isArray(raw)) return [];
-  return raw.map(c => (typeof c === 'string' ? c : c.name || ''));
+  return raw.map(c => (typeof c === 'string'
+    ? { id: c, name: c }
+    : { id: c.id, name: c.name || '' }));
 }
 
 function normalizeSettings(raw) {
   if (!raw) return null;
   return {
     branchName: raw.branchName || raw.name || '—',
-    hourlyRate: raw.hourlyRate ? `${raw.hourlyRate} EGP / hour` : '—',
-    taxRate: raw.taxRate ? `${raw.taxRate}%` : '—',
+    hourlyRate: raw.hourlyRate
+      ? (typeof raw.hourlyRate === 'number' ? `${raw.hourlyRate} EGP / hour` : raw.hourlyRate)
+      : '—',
+    taxRate: raw.taxRate
+      ? (typeof raw.taxRate === 'number' ? `${raw.taxRate}%` : raw.taxRate)
+      : '—',
+    singleHourlyRate: Number(raw.singleHourlyRate ?? 0),
+    multiHourlyRate: Number(raw.multiHourlyRate ?? 0),
+    taxRateValue: Number(raw.taxRateValue ?? 0),
   };
 }
+
+function getModalConfig(modal, categories, settings) {
+  const record = modal.record || {};
+  const categoryOptions = (categories || []).map((c) => ({ value: String(c.id), label: c.name }));
+  switch (modal.kind) {
+    case "room-add":
+      return { title: "Add Room", fields: [{ name: "name", label: "Room name", required: true }] };
+    case "room-edit":
+      return {
+        title: "Rename Room",
+        fields: [{ name: "name", label: "Room name", required: true }],
+        initial: { name: record.name || "" },
+      };
+    case "customer-add":
+      return {
+        title: "Add Customer",
+        fields: [
+          { name: "name", label: "Name", required: true },
+          { name: "email", label: "Email", type: "email" },
+          { name: "phone", label: "Phone" },
+        ],
+      };
+    case "customer-edit":
+      return {
+        title: "Edit Customer",
+        fields: [
+          { name: "name", label: "Name", required: true },
+          { name: "email", label: "Email", type: "email" },
+          { name: "phone", label: "Phone" },
+        ],
+        initial: { name: record.name, email: record.email, phone: record.phone },
+      };
+    case "product-add":
+      return {
+        title: "Add Product",
+        fields: [
+          { name: "name", label: "Name", required: true },
+          { name: "price", label: "Price", type: "number", required: true },
+          { name: "stock", label: "Stock", type: "number" },
+          { name: "categoryId", label: "Category", type: "select", options: categoryOptions, required: true },
+        ],
+      };
+    case "product-edit":
+      return {
+        title: "Edit Product",
+        fields: [
+          { name: "name", label: "Name", required: true },
+          { name: "price", label: "Price", type: "number", required: true },
+          { name: "stock", label: "Stock", type: "number" },
+          { name: "categoryId", label: "Category", type: "select", options: categoryOptions, required: true },
+        ],
+        initial: {
+          name: record.name,
+          price: record.price,
+          stock: record.stock,
+          categoryId: record.categoryId != null ? String(record.categoryId) : "",
+        },
+      };
+    case "staff-add":
+      return {
+        title: "Add Staff",
+        fields: [
+          { name: "name", label: "Name", required: true },
+          { name: "email", label: "Email", type: "email", required: true },
+          { name: "password", label: "Password", type: "password", required: true },
+          {
+            name: "role",
+            label: "Role",
+            type: "select",
+            options: [
+              { value: "Staff", label: "Staff" },
+              { value: "Admin", label: "Admin" },
+            ],
+          },
+        ],
+        initial: { role: "Staff" },
+      };
+    case "staff-edit":
+      return {
+        title: "Edit Staff",
+        fields: [
+          { name: "name", label: "Name", required: true },
+          {
+            name: "role",
+            label: "Role",
+            type: "select",
+            options: [
+              { value: "Staff", label: "Staff" },
+              { value: "Admin", label: "Admin" },
+            ],
+          },
+        ],
+        initial: { name: record.name, role: record.role || "Staff" },
+      };
+    case "category-add":
+      return { title: "Add Category", fields: [{ name: "name", label: "Name", required: true }] };
+    case "settings":
+      return {
+        title: "Edit Settings",
+        fields: [
+          { name: "branchName", label: "Branch name", required: true },
+          { name: "singleHourlyRate", label: "Single hourly rate", type: "number", required: true },
+          { name: "multiHourlyRate", label: "Multi hourly rate", type: "number", required: true },
+          { name: "taxPercent", label: "Tax %", type: "number", required: true },
+        ],
+        initial: {
+          branchName: settings?.branchName === "—" ? "" : (settings?.branchName || ""),
+          singleHourlyRate: settings?.singleHourlyRate ?? "",
+          multiHourlyRate: settings?.multiHourlyRate ?? "",
+          taxPercent: settings?.taxRateValue != null ? settings.taxRateValue * 100 : "",
+        },
+      };
+    case "order-status":
+      return {
+        title: `Order #${record.id}`,
+        submitLabel: "Update",
+        fields: [{
+          name: "status",
+          label: "Status",
+          type: "select",
+          required: true,
+          options: [
+            { value: "PREPARING", label: "PREPARING" },
+            { value: "READY", label: "READY" },
+            { value: "DELIVERED", label: "DELIVERED" },
+          ],
+        }],
+        initial: { status: record.status === "NEW" ? "PREPARING" : (record.status || "READY") },
+      };
+    default:
+      return null;
+  }
+}
+
+const FormModal = ({ title, fields, initial, onSubmit, onClose, busy, submitLabel }) => {
+  const [form, setForm] = useState(() => {
+    const next = {};
+    for (const field of fields) {
+      next[field.name] = initial?.[field.name] ?? field.defaultValue ?? "";
+    }
+    return next;
+  });
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onSubmit(form);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
+      <form
+        className="w-full max-w-md bg-[#0c0f17] border border-gray-800 rounded-[24px] p-6 space-y-4"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={handleSubmit}
+      >
+        <div className="flex justify-between items-center">
+          <h3 className="text-white font-bold">{title}</h3>
+          <button type="button" onClick={onClose} className="text-gray-500 hover:text-white"><X size={18} /></button>
+        </div>
+        {fields.map((field) => (
+          <label key={field.name} className="block space-y-1.5">
+            <span className="text-[11px] font-bold text-gray-500 uppercase">{field.label}</span>
+            {field.type === "select" ? (
+              <select
+                required={field.required}
+                value={form[field.name] ?? ""}
+                onChange={(e) => setForm((prev) => ({ ...prev, [field.name]: e.target.value }))}
+                className="w-full bg-[#111622] border border-gray-800 rounded-xl py-2.5 px-3 text-sm text-white focus:outline-none focus:border-blue-500"
+              >
+                <option value="">Select...</option>
+                {(field.options || []).map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type={field.type || "text"}
+                required={field.required}
+                value={form[field.name] ?? ""}
+                onChange={(e) => setForm((prev) => ({ ...prev, [field.name]: e.target.value }))}
+                className="w-full bg-[#111622] border border-gray-800 rounded-xl py-2.5 px-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+              />
+            )}
+          </label>
+        ))}
+        <div className="flex justify-end gap-2 pt-2">
+          <button type="button" onClick={onClose} className="px-4 py-2 text-xs font-bold text-gray-400 hover:text-white">
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={busy}
+            className="px-4 py-2 rounded-xl bg-[#1e40af] text-white text-xs font-bold disabled:opacity-50"
+          >
+            {busy ? "Saving..." : (submitLabel || "Save")}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+};
 
 export default CyberCafeDashboard;
