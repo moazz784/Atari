@@ -3,8 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import {
   Activity, LayoutDashboard, DoorOpen, ShoppingCart, Timer, Users,
   Package, BarChart3, UserCog, Layers, Settings, Menu, Bell,
-  ChevronDown, CreditCard, X, Edit, Trash2, Plus, Search, LogOut
+  ChevronDown, CreditCard, X, Edit, Trash2, Plus, Search, LogOut, QrCode
 } from 'lucide-react';
+import QrCardModal from '../QrCardModal';
 import {
   LineChart, Line, ResponsiveContainer, XAxis, YAxis,
   Tooltip, AreaChart, Area, PieChart, Pie, Cell
@@ -41,6 +42,7 @@ const CyberCafeDashboard = () => {
   const [toast, setToast] = useState("");
   const [modal, setModal] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [qrRoom, setQrRoom] = useState(null);
   const hubRef = useRef(null);
 
   // ===== Responsive detection =====
@@ -195,7 +197,10 @@ const CyberCafeDashboard = () => {
     if (!modal) return;
     switch (modal.kind) {
       case "room-add":
-        return run(() => api.createRoom(form.name, selectedBranch));
+        return run(async () => {
+          const created = await api.createRoom(form.name, selectedBranch);
+          setQrRoom(normalizeRoom(created));
+        });
       case "room-edit":
         return run(() => api.updateRoom(modal.record.id, { name: form.name }));
       case "customer-add":
@@ -282,6 +287,7 @@ const CyberCafeDashboard = () => {
             rooms={rooms}
             onAdd={() => setModal({ kind: "room-add" })}
             onEdit={(room) => setModal({ kind: "room-edit", record: room })}
+            onQr={(room) => setQrRoom(room)}
             onDelete={(room) => {
               if (!window.confirm(`Delete ${room.name || `Room ${room.id}`}?`)) return;
               run(() => api.deleteRoom(room.id));
@@ -570,7 +576,11 @@ const CyberCafeDashboard = () => {
             <div className="flex items-center gap-4 border-l border-gray-800 pl-4 md:pl-6">
               <div className="relative cursor-pointer text-gray-400 hover:text-white">
                 <Bell size={19} />
-                <span className="absolute -top-1 -right-1 bg-[#ef4444] text-white text-[8px] font-black w-3.5 h-3.5 rounded-full flex items-center justify-center border-2 border-[#07090d]">5</span>
+                {orders.filter((o) => o.status === "NEW" || o.status === "PREPARING").length > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-[#ef4444] text-white text-[8px] font-black w-3.5 h-3.5 rounded-full flex items-center justify-center border-2 border-[#07090d]">
+                    {orders.filter((o) => o.status === "NEW" || o.status === "PREPARING").length}
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-3">
                 <div className="text-right hidden xs:block">
@@ -618,6 +628,10 @@ const CyberCafeDashboard = () => {
           onClose={() => !busy && setModal(null)}
           onSubmit={submitModal}
         />
+      )}
+
+      {qrRoom && (
+        <QrCardModal room={qrRoom} onClose={() => setQrRoom(null)} />
       )}
     </div>
   );
@@ -801,7 +815,7 @@ const DashboardContent = ({ stats, revenueData, pieData, topProducts, rooms, ord
 );
 
 // ---------------------- ROOMS PAGE ----------------------
-const RoomsContent = ({ rooms, onAdd, onEdit, onDelete }) => (
+const RoomsContent = ({ rooms, onAdd, onEdit, onDelete, onQr }) => (
   <div className="bg-[#0c0f17] rounded-[28px] p-5 md:p-7 border border-gray-800/40">
     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
       <h3 className="text-white font-bold text-lg">Manage Rooms</h3>
@@ -835,6 +849,7 @@ const RoomsContent = ({ rooms, onAdd, onEdit, onDelete }) => (
               <td className="py-3 text-sm text-[#f59e0b] font-bold">{room.price}</td>
               <td className="py-3">
                 <div className="flex items-center gap-2">
+                  <button onClick={() => onQr(room)} className="p-1 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20" title="QR"><QrCode size={14} /></button>
                   <button onClick={() => onEdit(room)} className="p-1 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20"><Edit size={14} /></button>
                   <button onClick={() => onDelete(room)} className="p-1 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20"><Trash2 size={14} /></button>
                 </div>
@@ -1068,10 +1083,18 @@ const SettingsContent = ({ settings, onEdit }) => (
       </div>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-[#111622] rounded-2xl">
         <div>
-          <p className="text-white font-medium">Hourly Rate</p>
+          <p className="text-white font-medium">Single hourly rate</p>
           <p className="text-[10px] text-gray-500">
-            Single {settings?.hourlyRate || '—'}
-            {settings?.multiHourlyRate != null ? ` • Multi ${settings.multiHourlyRate} EGP / hour` : ''}
+            {settings?.singleHourlyRate != null ? `${settings.singleHourlyRate} EGP / hour` : (settings?.hourlyRate || '—')}
+          </p>
+        </div>
+        <button onClick={onEdit} className="text-blue-400 text-xs font-bold">Edit</button>
+      </div>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-[#111622] rounded-2xl">
+        <div>
+          <p className="text-white font-medium">Multi hourly rate</p>
+          <p className="text-[10px] text-gray-500">
+            {settings?.multiHourlyRate != null ? `${settings.multiHourlyRate} EGP / hour` : '—'}
           </p>
         </div>
         <button onClick={onEdit} className="text-blue-400 text-xs font-bold">Edit</button>
@@ -1208,6 +1231,7 @@ function normalizeRoom(r) {
   return {
     id: r.id ?? r.roomId,
     name: r.name || `Room ${r.id ?? r.roomId}`,
+    qrToken: r.qrToken,
     status: occupied ? 'Occupied' : 'Available',
     user: r.user || r.customerName || '-',
     time: r.time || r.elapsed || '-',

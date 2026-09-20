@@ -126,7 +126,7 @@ export function toStaffRoom(room) {
     roomOrders: room.roomOrders ?? [],
     isCheckingOut: room.isCheckingOut ?? false,
     selectedMode: (room.selectedMode || "single").toLowerCase(),
-    currentRate: room.currentRate ?? 20,
+    currentRate: room.currentRate ?? null,
     qrToken: room.qrToken,
     branchId: room.branchId,
     user: room.user,
@@ -135,7 +135,7 @@ export function toStaffRoom(room) {
   };
 }
 
-/** Map GET /api/qr/{token} → CustomerPage { Drinks: [...], ... } */
+/** Map GET /api/qr/{token} → CustomerPage tabs from DB categories */
 export function menuToTabs(menu) {
   const tabs = {};
   for (const category of menu?.categories ?? []) {
@@ -254,6 +254,73 @@ export const api = {
   topProducts: (branchId) =>
     request(`/api/reports/top-products${qs({ branchId })}`),
 };
+
+export function guestOrderUrl(qrToken) {
+  if (!qrToken) return "";
+  return `${window.location.origin}/order?token=${qrToken}`;
+}
+
+export async function downloadRoomQrPng(id, name = "room") {
+  const blob = await api.roomQrBlob(id);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${String(name).replace(/\s+/g, "-")}-qr.png`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+export async function printRoomQr({ id, name, qrToken }) {
+  const blob = await api.roomQrBlob(id);
+  const imgUrl = URL.createObjectURL(blob);
+  const orderUrl = guestOrderUrl(qrToken);
+  const win = window.open("", "_blank", "noopener,noreferrer,width=480,height=720");
+  if (!win) {
+    URL.revokeObjectURL(imgUrl);
+    throw new ApiError(0, { error: "Allow pop-ups to print the QR code." });
+  }
+  const title = escapeHtml(name || `Room ${id}`);
+  const safeUrl = escapeHtml(orderUrl);
+  win.document.write(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${title} QR</title>
+  <style>
+    body { font-family: system-ui, sans-serif; text-align: center; padding: 32px; color: #111; }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    p { color: #555; font-size: 13px; }
+    img { width: 280px; height: 280px; margin: 16px 0; }
+    .url { font-size: 11px; word-break: break-all; color: #333; }
+  </style>
+</head>
+<body>
+  <h1>${title}</h1>
+  <p>Scan to order</p>
+  <img id="qr" src="${imgUrl}" alt="QR" />
+  <p class="url">${safeUrl}</p>
+  <script>
+    const img = document.getElementById("qr");
+    img.onload = () => { window.focus(); window.print(); };
+  </script>
+</body>
+</html>`);
+  win.document.close();
+  win.addEventListener("afterprint", () => {
+    URL.revokeObjectURL(imgUrl);
+    win.close();
+  });
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
 
 let signalRLoading = null;
 

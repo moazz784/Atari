@@ -1,27 +1,19 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { 
   Play, Square, Monitor, Package, LayoutDashboard, 
   Plus, Minus, Check, X, Receipt, ShoppingCart, Clock, History, ChevronDown,
-  LogOut
+  LogOut, QrCode
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { 
   api, toStaffRoom, connectOrdersHub, getToken, getUser 
 } from "../api";
-
-// تعريف الأسعار هنا لسهولة التعديل
-const RATES = {
-  single: 20,
-  multi: 40
-};
-
-// الـ branchId بيتجاب من اليوزر بعد الـ login، ولو مش موجود نستخدم 1
-const FALLBACK_BRANCH_ID = 1;
+import QrCardModal from "../QrCardModal";
 
 export default function CyberProSystem() {
   const navigate = useNavigate();
   const user = getUser();
-  const BRANCH_ID = user?.branchId ?? FALLBACK_BRANCH_ID;
+  const [branchId, setBranchId] = useState(user?.branchId ?? null);
 
   const [view, setView] = useState("dashboard");
   const [showAddRoomModal, setShowAddRoomModal] = useState(false);
@@ -35,23 +27,60 @@ export default function CyberProSystem() {
   const [revenueHistory, setRevenueHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [rates, setRates] = useState({ single: 0, multi: 0 });
+  const [qrRoom, setQrRoom] = useState(null);
+  const ratesRef = useRef(rates);
+  ratesRef.current = rates;
+
+  useEffect(() => {
+    if (user?.branchId) {
+      setBranchId(user.branchId);
+      return;
+    }
+    let cancelled = false;
+    api.branches()
+      .then((list) => {
+        if (cancelled) return;
+        const first = Array.isArray(list) ? list[0] : null;
+        if (!first?.id) {
+          setError("لا يوجد فرع مرتبط بهذا الحساب");
+          setLoading(false);
+          return;
+        }
+        setBranchId(first.id);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err.message || "فشل تحميل الفروع");
+          setLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [user?.branchId]);
 
   // ===== 1. تحميل البيانات الأولية من الـ API =====
   useEffect(() => {
+    if (branchId == null) return;
     let cancelled = false;
 
     async function boot() {
       try {
-        const [roomsData, pending, products, txs] = await Promise.all([
-          api.rooms(BRANCH_ID),
-          api.pendingOrders(BRANCH_ID).catch(() => []),
-          api.products(BRANCH_ID).catch(() => []),
-          api.transactions(BRANCH_ID).catch(() => []),
+        const [roomsData, pending, products, txs, stgs] = await Promise.all([
+          api.rooms(branchId),
+          api.pendingOrders(branchId).catch(() => []),
+          api.products(branchId).catch(() => []),
+          api.transactions(branchId).catch(() => []),
+          api.settings(branchId).catch(() => null),
         ]);
 
         if (cancelled) return;
 
-        setRooms((roomsData || []).map(toStaffRoom));
+        const nextRates = {
+          single: Number(stgs?.singleHourlyRate) || 0,
+          multi: Number(stgs?.multiHourlyRate) || 0,
+        };
+        setRates(nextRates);
+        setRooms((roomsData || []).map((room) => withIdleRate(toStaffRoom(room), nextRates)));
         setPendingOrders(normalizePending(pending));
         setInventory(normalizeProducts(products));
         const history = normalizeTransactions(txs);
@@ -68,7 +97,7 @@ export default function CyberProSystem() {
 
     boot();
     return () => { cancelled = true; };
-  }, [BRANCH_ID]);
+  }, [branchId]);
 
   // ===== 2. SignalR للتحديثات اللحظية =====
   useEffect(() => {
@@ -85,17 +114,17 @@ export default function CyberProSystem() {
       },
       onRoomUpdated: (room) => {
         setRooms(prev => {
-          const mapped = toStaffRoom(room);
+          const mapped = withIdleRate(toStaffRoom(room), ratesRef.current);
           const exists = prev.find(r => r.id === mapped.id);
           return exists
-            ? prev.map(r => r.id === mapped.id ? { ...mapped, elapsed: r.elapsed, isCheckingOut: r.isCheckingOut } : r)
+            ? prev.map(r => r.id === mapped.id ? { ...mapped, isCheckingOut: r.isCheckingOut } : r)
             : [...prev, mapped];
         });
       },
       onSessionEnded: ({ roomId }) => {
         setRooms(prev => prev.map(r => 
           r.id === roomId 
-            ? { ...r, status: "idle", startTime: null, elapsed: 0, roomOrders: [], isCheckingOut: false, selectedMode: 'single', currentRate: RATES.single }
+            ? { ...r, status: "idle", startTime: null, elapsed: 0, roomOrders: [], isCheckingOut: false, selectedMode: 'single', currentRate: ratesRef.current.single }
             : r
         ));
       },
@@ -109,10 +138,9 @@ export default function CyberProSystem() {
     const timer = setInterval(() => {
       setRooms(prev => prev.map(r => {
         if (r.status !== "active" || r.isCheckingOut) return r;
-        let start = r.startTime;
-        if (typeof start === "string") start = new Date(start).getTime();
+        const start = startTimeMs(r.startTime);
         if (!start) return r;
-        return { ...r, elapsed: Math.floor((Date.now() - start) / 1000) };
+        return { ...r, elapsed: Math.max(0, Math.floor((Date.now() - start) / 1000)) };
       }));
     }, 1000);
     return () => clearInterval(timer);
@@ -129,10 +157,12 @@ export default function CyberProSystem() {
   const addNewRoom = async () => {
     if (newRoomName.trim() === "") return;
     try {
-      const created = await api.createRoom(newRoomName.toUpperCase(), BRANCH_ID);
-      setRooms(prev => [...prev, toStaffRoom(created)]);
+      const created = await api.createRoom(newRoomName.toUpperCase(), branchId);
+      const mapped = withIdleRate(toStaffRoom(created), ratesRef.current);
+      setRooms(prev => [...prev, mapped]);
       setNewRoomName("");
       setShowAddRoomModal(false);
+      setQrRoom(mapped);
     } catch (err) {
       alert(err.message);
     }
@@ -153,7 +183,7 @@ export default function CyberProSystem() {
   // ===== 6. تغيير النوع =====
   const changeMode = (id, mode) => {
     setRooms(prev => prev.map(r => 
-      r.id === id ? { ...r, selectedMode: mode, currentRate: RATES[mode] } : r
+      r.id === id ? { ...r, selectedMode: mode, currentRate: ratesRef.current[mode] } : r
     ));
     setActiveDropdown(null);
   };
@@ -186,7 +216,7 @@ export default function CyberProSystem() {
       setTotalRevenue(prev => prev + finalAmount);
       setRooms(prev => prev.map(r => 
         r.id === id 
-          ? { ...r, status: "idle", startTime: null, elapsed: 0, roomOrders: [], isCheckingOut: false, selectedMode: 'single', currentRate: RATES.single } 
+          ? { ...r, status: "idle", startTime: null, elapsed: 0, roomOrders: [], isCheckingOut: false, selectedMode: 'single', currentRate: ratesRef.current.single } 
           : r
       ));
     } catch (err) {
@@ -257,7 +287,7 @@ export default function CyberProSystem() {
     const h = Math.floor(s / 3600);
     const m = Math.floor((s % 3600) / 60);
     const sec = s % 60;
-    return `${h}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+    return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
   };
 
   // ===== شاشات التحميل والخطأ =====
@@ -353,7 +383,7 @@ export default function CyberProSystem() {
             
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 text-right">
               {rooms.map(room => {
-                const rate = room.currentRate || RATES[room.selectedMode] || RATES.single;
+                const rate = room.currentRate || rates[room.selectedMode] || rates.single;
                 const timeCost = Math.ceil((room.elapsed / 3600) * rate);
                 const ordersCost = (room.roomOrders || []).reduce((sum, item) => sum + (item.price || 0), 0);
                 const totalCost = timeCost + ordersCost;
@@ -381,10 +411,20 @@ export default function CyberProSystem() {
                           <div>
                             <h3 className="text-2xl font-black text-white">{room.name}</h3>
                             <p className={`text-[11px] font-black uppercase mt-1 px-3 py-1 rounded-full w-fit ${room.status === 'active' ? 'bg-blue-600/20 text-blue-400' : 'bg-gray-800 text-gray-500'}`}>
-                              {room.selectedMode === 'multi' ? 'وضع مالتي (40)' : 'وضع سنجل (20)'}
+                              {room.selectedMode === 'multi' ? `وضع مالتي (${rates.multi})` : `وضع سنجل (${rates.single})`}
                             </p>
                           </div>
-                          <div className={`w-3 h-3 rounded-full ${room.status === 'active' ? 'bg-blue-500 animate-pulse' : 'bg-gray-800'}`}></div>
+                          <div className="flex items-center gap-3">
+                            <button
+                              type="button"
+                              onClick={() => setQrRoom(room)}
+                              className="p-2 rounded-xl bg-white/5 text-emerald-400 hover:bg-white/10"
+                              title="QR"
+                            >
+                              <QrCode size={18} />
+                            </button>
+                            <div className={`w-3 h-3 rounded-full ${room.status === 'active' ? 'bg-blue-500 animate-pulse' : 'bg-gray-800'}`}></div>
+                          </div>
                         </div>
 
                         <div className="bg-black/40 py-8 rounded-[2.5rem] text-center border border-white/5 mb-8">
@@ -413,10 +453,10 @@ export default function CyberProSystem() {
                               {activeDropdown === room.id && (
                                 <div className="absolute bottom-full right-0 mb-3 w-40 bg-[#1e293b] border border-white/10 rounded-2xl shadow-2xl z-20 overflow-hidden animate-in fade-in slide-in-from-bottom-2">
                                   <button onClick={() => changeMode(room.id, 'single')} className="w-full px-4 py-3 text-right text-sm hover:bg-white/5 text-white font-bold flex items-center gap-2 border-b border-white/5">
-                                    <div className={`w-2 h-2 rounded-full ${room.selectedMode === 'single' ? 'bg-blue-500' : 'bg-gray-600'}`}></div> سنجل
+                                    <div className={`w-2 h-2 rounded-full ${room.selectedMode === 'single' ? 'bg-blue-500' : 'bg-gray-600'}`}></div> سنجل ({rates.single})
                                   </button>
                                   <button onClick={() => changeMode(room.id, 'multi')} className="w-full px-4 py-3 text-right text-sm hover:bg-white/5 text-white font-bold flex items-center gap-2">
-                                    <div className={`w-2 h-2 rounded-full ${room.selectedMode === 'multi' ? 'bg-purple-500' : 'bg-gray-600'}`}></div> مالتي
+                                    <div className={`w-2 h-2 rounded-full ${room.selectedMode === 'multi' ? 'bg-purple-500' : 'bg-gray-600'}`}></div> مالتي ({rates.multi})
                                   </button>
                                 </div>
                               )}
@@ -503,6 +543,9 @@ export default function CyberProSystem() {
           </div>
         )}
       </main>
+      {qrRoom && (
+        <QrCardModal room={qrRoom} onClose={() => setQrRoom(null)} />
+      )}
     </div>
   );
 }
@@ -539,6 +582,23 @@ function normalizeTransactions(list = []) {
     amount: t.amount || t.total || 0,
     time: t.time || t.createdAt || "",
   }));
+}
+
+function startTimeMs(start) {
+  if (start == null || start === "") return 0;
+  if (typeof start === "number") return start;
+  const numeric = Number(start);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric < 1e12 ? numeric * 1000 : numeric;
+  }
+  const parsed = Date.parse(start);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function withIdleRate(room, rates) {
+  if (room.status === "active" && room.currentRate != null) return room;
+  const mode = room.selectedMode === "multi" ? "multi" : "single";
+  return { ...room, currentRate: room.currentRate ?? rates[mode] };
 }
 
 // مكون زر القائمة الجانبية
